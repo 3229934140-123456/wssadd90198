@@ -12,6 +12,7 @@ import {
   ApprovalRecord,
   RiskLevel,
   DiscountDetail,
+  ReviewStatus,
 } from '../types'
 import {
   mockMembers,
@@ -79,6 +80,7 @@ interface AppState {
   closeShift: () => ShiftSummary
   addAbnormalAlert: (alert: Omit<AbnormalAlert, 'id' | 'timestamp'>) => void
   clearAbnormalAlerts: () => void
+  reviewTransaction: (transactionId: string, status: ReviewStatus, reviewer: string, note: string) => void
 }
 
 const generateId = () => Math.random().toString(36).substring(2, 12)
@@ -206,6 +208,7 @@ export const useAppStore = create<AppState>()(
           receiptPrintCount: 0,
           manualAdjusted: !!data.discountDetail && data.discountDetail.discountAmount > 0,
           originalAmount: data.discountDetail?.originalAmount,
+          reviewStatus: 'unreviewed',
         }
 
         set((state) => {
@@ -222,11 +225,15 @@ export const useAppStore = create<AppState>()(
                 lastConsumeAt: nowStr(),
               }
             } else if (data.type === 'deduct') {
+              const makeUp = data.makeUpAmount || 0
+              const newPrincipal = m.principal + makeUp - (principalUsed || 0)
+              const newGift = m.gift - (giftUsed || 0)
+              const newBalance = newPrincipal + newGift
               return {
                 ...m,
-                balance: m.balance - data.amount,
-                principal: m.principal - (principalUsed || 0),
-                gift: m.gift - (giftUsed || 0),
+                balance: newBalance,
+                principal: newPrincipal,
+                gift: newGift,
                 totalConsume: m.totalConsume + data.amount,
                 lastConsumeAt: nowStr(),
               }
@@ -255,11 +262,15 @@ export const useAppStore = create<AppState>()(
             if (data.paymentMethod === 'alipay') { shift.alipayTotal += data.amount; shift.alipayCount += 1 }
           } else if (data.type === 'deduct') {
             shift.deductCount += 1
-            if (data.paymentMethod === 'stored') { shift.storedDeductTotal += data.amount }
-            if (data.paymentMethod === 'cash') { shift.cashTotal += data.amount; shift.cashCount += 1 }
-            if (data.paymentMethod === 'card') { shift.cardTotal += data.amount; shift.cardCount += 1 }
-            if (data.paymentMethod === 'wechat') { shift.wechatTotal += data.amount; shift.wechatCount += 1 }
-            if (data.paymentMethod === 'alipay') { shift.alipayTotal += data.amount; shift.alipayCount += 1 }
+            if (data.makeUpAmount && data.makeUpMethod) {
+              shift.makeUpTotal = (shift.makeUpTotal || 0) + data.makeUpAmount
+              const mu = data.makeUpAmount
+              if (data.makeUpMethod === 'cash') { shift.cashTotal += mu; shift.cashCount += 1 }
+              if (data.makeUpMethod === 'card') { shift.cardTotal += mu; shift.cardCount += 1 }
+              if (data.makeUpMethod === 'wechat') { shift.wechatTotal += mu; shift.wechatCount += 1 }
+              if (data.makeUpMethod === 'alipay') { shift.alipayTotal += mu; shift.alipayCount += 1 }
+            }
+            shift.storedDeductTotal += data.amount - (data.makeUpAmount || 0)
           } else if (data.type === 'refund') {
             shift.refundTotal += data.amount
             shift.refundCount += 1
@@ -314,12 +325,13 @@ export const useAppStore = create<AppState>()(
                 totalRecharge: m.totalRecharge - principal,
               }
             } else if (tx.type === 'deduct') {
+              const makeUp = tx.makeUpAmount || 0
               return {
                 ...m,
-                balance: m.balance + tx.amount,
-                principal: m.principal + (tx.principalUsed || tx.amount),
+                balance: m.balance + tx.amount - makeUp,
+                principal: m.principal + (tx.principalUsed || tx.amount) - makeUp,
                 gift: m.gift + (tx.giftUsed || 0),
-                totalConsume: m.totalConsume - tx.amount,
+                totalConsume: m.totalConsume - (tx.amount - makeUp),
               }
             }
             return m
@@ -336,11 +348,15 @@ export const useAppStore = create<AppState>()(
             if (tx.paymentMethod === 'alipay') { shift.alipayTotal -= tx.amount; shift.alipayCount -= 1 }
           } else if (tx.type === 'deduct') {
             shift.deductCount -= 1
-            if (tx.paymentMethod === 'stored') { shift.storedDeductTotal -= tx.amount }
-            if (tx.paymentMethod === 'cash') { shift.cashTotal -= tx.amount; shift.cashCount -= 1 }
-            if (tx.paymentMethod === 'card') { shift.cardTotal -= tx.amount; shift.cardCount -= 1 }
-            if (tx.paymentMethod === 'wechat') { shift.wechatTotal -= tx.amount; shift.wechatCount -= 1 }
-            if (tx.paymentMethod === 'alipay') { shift.alipayTotal -= tx.amount; shift.alipayCount -= 1 }
+            const makeUp = tx.makeUpAmount || 0
+            shift.storedDeductTotal -= (tx.amount - makeUp)
+            if (makeUp > 0 && tx.makeUpMethod) {
+              shift.makeUpTotal = Math.max(0, (shift.makeUpTotal || 0) - makeUp)
+              if (tx.makeUpMethod === 'cash') { shift.cashTotal -= makeUp; shift.cashCount -= 1 }
+              if (tx.makeUpMethod === 'card') { shift.cardTotal -= makeUp; shift.cardCount -= 1 }
+              if (tx.makeUpMethod === 'wechat') { shift.wechatTotal -= makeUp; shift.wechatCount -= 1 }
+              if (tx.makeUpMethod === 'alipay') { shift.alipayTotal -= makeUp; shift.alipayCount -= 1 }
+            }
           }
 
           const newStreak = (state.cancelStreak[cashier.id] || 0) + 1
@@ -454,6 +470,24 @@ export const useAppStore = create<AppState>()(
       },
 
       clearAbnormalAlerts: () => set({ abnormalAlerts: [] }),
+
+      reviewTransaction: (transactionId, status, reviewer, note) => {
+        set((state) => {
+          const tx = state.transactions.find((t) => t.id === transactionId)
+          if (!tx) return state
+          const newTx: Transaction = {
+            ...tx,
+            reviewStatus: status,
+            reviewer: reviewer || undefined,
+            reviewNote: note || undefined,
+            reviewedAt: nowStr(),
+            updatedAt: nowStr(),
+          }
+          return {
+            transactions: state.transactions.map((t) => (t.id === transactionId ? newTx : t)),
+          }
+        })
+      },
     }),
     {
       name: 'medical-aesthetic-storage',

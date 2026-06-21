@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useMemo } from 'react'
+import { useState, useRef, useEffect, useMemo, useCallback } from 'react'
 import { Navigate, useNavigate } from 'react-router-dom'
 import { useAppStore } from '../store/useAppStore'
 import {
@@ -8,8 +8,9 @@ import {
   paymentMethodLabels,
   checkDiscountRules,
   riskLevelConfig,
+  calcValueDiscountRatio,
 } from '../utils/rules'
-import type { TransactionItem, PaymentMethod, ApprovalRecord, DiscountDetail, TransactionType } from '../types'
+import type { TransactionItem, PaymentMethod, ApprovalRecord, DiscountDetail, RiskLevel } from '../types'
 
 interface DraftItem {
   id: string
@@ -24,6 +25,15 @@ interface DraftItem {
   unitPrice: number
   quantity: number
   discountLocked: boolean
+}
+
+interface ApprovalState {
+  level: 'supervisor' | 'manager'
+  approverId: string
+  approverName: string
+  reason: string
+  originalTotal: number
+  approvedTotal: number
 }
 
 const genItemId = () => 'item_' + Math.random().toString(36).slice(2, 10)
@@ -56,25 +66,17 @@ export default function DeductConfirmPage() {
       discountLocked: false,
     },
   ])
-  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('stored')
   const [showSuccess, setShowSuccess] = useState(false)
   const [lastTxNo, setLastTxNo] = useState('')
-  const [signature, setSignature] = useState('')
   const [hasSigned, setHasSigned] = useState(false)
-  const [makeUpAmount, setMakeUpAmount] = useState(0)
   const [makeUpMethod, setMakeUpMethod] = useState<PaymentMethod>('wechat')
 
   const [showApproval, setShowApproval] = useState(false)
   const [approvalPwd, setApprovalPwd] = useState('')
   const [approvalReason, setApprovalReason] = useState('')
-  const [discountApproval, setDiscountApproval] = useState<{
-    level: 'supervisor' | 'manager'
-    approverId: string
-    approverName: string
-  } | null>(null)
 
-  const [showDetailDrawer, setShowDetailDrawer] = useState(false)
-  const [detailTxId, setDetailTxId] = useState<string | null>(null)
+  const [approvalHistory, setApprovalHistory] = useState<ApprovalState[]>([])
+  const [needReApproval, setNeedReApproval] = useState(false)
 
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const isDrawing = useRef(false)
@@ -112,23 +114,51 @@ export default function DeductConfirmPage() {
     return checkDiscountRules(originalTotal, itemsTotal, txItems)
   }, [items, originalTotal, itemsTotal])
 
+  const latestApproval = useMemo(() => {
+    return approvalHistory.length > 0 ? approvalHistory[approvalHistory.length - 1] : null
+  }, [approvalHistory])
+
+  const currentApprovalLevel = useMemo(() => {
+    if (!latestApproval) return 'none' as const
+    return latestApproval.level
+  }, [latestApproval])
+
+  useEffect(() => {
+    if (!hasDiscount) {
+      setApprovalHistory([])
+      setNeedReApproval(false)
+      return
+    }
+    if (!latestApproval) {
+      setNeedReApproval(true)
+      return
+    }
+    const requiredLevel = discountCheck.approvalLevel
+    const currentLevel = currentApprovalLevel
+    if (requiredLevel === 'manager' && currentLevel !== 'manager') {
+      setNeedReApproval(true)
+    } else {
+      setNeedReApproval(false)
+    }
+  }, [hasDiscount, discountCheck.approvalLevel, currentApprovalLevel, latestApproval])
+
   const balance = currentMember?.balance || 0
-  const storedAmount = Math.min(itemsTotal, balance)
   const needMakeUp = itemsTotal > balance
   const actualMakeUp = needMakeUp ? itemsTotal - balance : 0
 
   const principalUsed = useMemo(() => {
     if (!currentMember) return 0
-    let remain = itemsTotal
+    const afterMakeUp = needMakeUp ? balance : itemsTotal
+    let remain = afterMakeUp
     const gift = Math.min(remain, currentMember.gift)
     remain -= gift
-    return remain
-  }, [itemsTotal, currentMember])
+    return remain + (needMakeUp ? actualMakeUp : 0)
+  }, [itemsTotal, currentMember, needMakeUp, actualMakeUp, balance])
 
   const giftUsed = useMemo(() => {
     if (!currentMember) return 0
-    return Math.min(itemsTotal, currentMember.gift)
-  }, [itemsTotal, currentMember])
+    return Math.min(itemsTotal - actualMakeUp, currentMember.gift)
+  }, [itemsTotal, currentMember, actualMakeUp])
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -181,7 +211,6 @@ export default function DeductConfirmPage() {
     if (!ctx) return
     ctx.clearRect(0, 0, canvas.width, canvas.height)
     setHasSigned(false)
-    setSignature('')
   }
 
   const addItem = () => {
@@ -236,7 +265,7 @@ export default function DeductConfirmPage() {
   }
 
   const handleUnitPriceChange = (id: string, newPrice: number) => {
-    if (!discountApproval) {
+    if (!latestApproval) {
       alert('价格已锁定，如需特殊折扣请先申请授权')
       return
     }
@@ -277,13 +306,19 @@ export default function DeductConfirmPage() {
       return
     }
 
-    setDiscountApproval({
+    const newApproval: ApprovalState = {
       level: isManager ? 'manager' : 'supervisor',
       approverId: isManager ? 'm001' : 's001',
       approverName: isManager ? '刘店总' : '张主管',
-    })
+      reason: approvalReason,
+      originalTotal,
+      approvedTotal: itemsTotal,
+    }
+    setApprovalHistory([...approvalHistory, newApproval])
     setShowApproval(false)
     setApprovalPwd('')
+    setApprovalReason('')
+    setNeedReApproval(false)
   }
 
   const canSubmit = useMemo(() => {
@@ -295,15 +330,15 @@ export default function DeductConfirmPage() {
     }
     if (needMakeUp && actualMakeUp > 0 && !makeUpMethod) return false
     if (!hasSigned) return false
-    if (hasDiscount && !discountApproval) return false
+    if (hasDiscount && !latestApproval) return false
+    if (needReApproval) return false
     return true
-  }, [items, itemsTotal, needMakeUp, actualMakeUp, makeUpMethod, hasSigned, hasDiscount, discountApproval])
+  }, [items, itemsTotal, needMakeUp, actualMakeUp, makeUpMethod, hasSigned, hasDiscount, latestApproval, needReApproval])
 
   const handleSubmit = () => {
     if (!currentMember || !canSubmit) return
     const canvas = canvasRef.current
     const sigData = canvas ? canvas.toDataURL('image/png') : ''
-    setSignature(sigData)
 
     const txItems: TransactionItem[] = items.map((it) => ({
       id: genItemId(),
@@ -321,27 +356,27 @@ export default function DeductConfirmPage() {
       amount: it.unitPrice * it.quantity,
       discountAmount: (it.originalPrice - it.unitPrice) * it.quantity,
       discountRatio: it.originalPrice > 0 ? it.unitPrice / it.originalPrice : 1,
-      discountApprovalId: discountApproval ? 'appr_' + it.id : undefined,
+      discountApprovalId: latestApproval ? 'appr_' + it.id : undefined,
     }))
 
     const firstConsultant = items.find((i) => i.consultantId)
     const consultantId = firstConsultant?.consultantId
     const consultantName = firstConsultant?.consultantName
 
-    const approvalRecords: ApprovalRecord[] = discountApproval
-      ? [{
-          id: 'appr_' + Date.now(),
-          transactionId: '',
-          approverId: discountApproval.approverId,
-          approverName: discountApproval.approverName,
-          approvalLevel: discountApproval.level,
-          approvalType: 'price_adjust',
-          reason: approvalReason,
-          originalValue: originalTotal,
-          newValue: itemsTotal,
-          timestamp: new Date().toISOString().replace('T', ' ').slice(0, 19),
-        }]
-      : []
+    const approvalRecords: ApprovalRecord[] = approvalHistory.map((a, idx) => ({
+      id: 'appr_' + Date.now() + '_' + idx,
+      transactionId: '',
+      approverId: a.approverId,
+      approverName: a.approverName,
+      approvalLevel: a.level,
+      approvalType: 'price_adjust' as const,
+      reason: a.reason,
+      originalValue: a.originalTotal,
+      newValue: a.approvedTotal,
+      timestamp: new Date().toISOString().replace('T', ' ').slice(0, 19),
+    }))
+
+    const valueDiscountRatio = hasDiscount ? calcValueDiscountRatio(itemsTotal, originalTotal) : undefined
 
     const discountDetail: DiscountDetail | undefined = hasDiscount
       ? {
@@ -349,34 +384,19 @@ export default function DeductConfirmPage() {
           discountAmount: totalDiscount,
           finalAmount: itemsTotal,
           discountRatio: originalTotal > 0 ? itemsTotal / originalTotal : 1,
-          authorizationType: discountApproval?.level || 'none',
-          authorizedById: discountApproval?.approverId,
-          authorizedByName: discountApproval?.approverName,
-          authorizationReason: approvalReason || undefined,
+          valueDiscountRatio,
+          authorizationType: latestApproval?.level || 'none',
+          authorizedById: latestApproval?.approverId,
+          authorizedByName: latestApproval?.approverName,
+          authorizationReason: approvalHistory.map((a) => `${a.approverName}: ${a.reason}`).join('; '),
         }
       : undefined
-
-    if (needMakeUp && actualMakeUp > 0) {
-      createTransaction({
-        type: 'recharge',
-        memberId: currentMember.id,
-        amount: actualMakeUp,
-        paymentMethod: makeUpMethod,
-        rechargePrincipal: actualMakeUp,
-        rechargeGift: 0,
-        remarks: '补差价充值',
-        signature: sigData,
-        makeUpAmount: actualMakeUp,
-        makeUpMethod,
-      })
-      setMakeUpAmount(actualMakeUp)
-    }
 
     const deductTx = createTransaction({
       type: 'deduct',
       memberId: currentMember.id,
       amount: itemsTotal,
-      paymentMethod: needMakeUp ? 'stored' : paymentMethod,
+      paymentMethod: 'stored',
       items: txItems,
       consultantId,
       consultantName,
@@ -389,13 +409,15 @@ export default function DeductConfirmPage() {
       makeUpMethod: needMakeUp ? makeUpMethod : undefined,
       riskLevel: discountCheck.riskLevel,
       riskDetails: discountCheck.warnings,
-      warningFlags: hasDiscount ? ['手工调整金额'] : undefined,
+      warningFlags: hasDiscount
+        ? ['手工调整金额', ...discountCheck.warnings]
+        : undefined,
     })
 
-    if (hasDiscount && discountApproval) {
+    if (hasDiscount && latestApproval) {
       addAbnormalAlert({
         type: 'discount',
-        message: `项目扣款折扣 ${discountApproval.approverName} 授权：${formatCurrency(originalTotal)} → ${formatCurrency(itemsTotal)}，会员：${currentMember.name}`,
+        message: `项目扣款折扣 ${latestApproval.approverName} 授权：${formatCurrency(originalTotal)} → ${formatCurrency(itemsTotal)}，会员：${currentMember.name}`,
         transactionId: deductTx.id,
         cashierId: currentCashier.id,
         level: discountCheck.riskLevel === 'critical' || discountCheck.riskLevel === 'high' ? 'danger' : 'warning',
@@ -427,6 +449,7 @@ export default function DeductConfirmPage() {
   const riskCfg = riskLevelConfig[discountCheck.riskLevel]
 
   if (showSuccess) {
+    const newBalance = currentMember.balance + actualMakeUp - itemsTotal
     return (
       <div className="page-card" style={{ textAlign: 'center', paddingTop: 60 }}>
         <div style={{ fontSize: 80, marginBottom: 20 }}>✅</div>
@@ -434,12 +457,6 @@ export default function DeductConfirmPage() {
         <p className="page-subtitle">交易单号：<span className="text-bold">{lastTxNo}</span></p>
 
         <div style={{ maxWidth: 520, margin: '32px auto', background: '#f0fdf4', padding: 28, borderRadius: 16, border: '1px solid #bbf7d0', textAlign: 'left' }}>
-          {makeUpAmount > 0 && (
-            <div className="summary-row">
-              <span>补差价充值（{paymentMethodLabels[makeUpMethod]}）</span>
-              <span className="text-green text-bold">+{formatCurrency(makeUpAmount)}</span>
-            </div>
-          )}
           {hasDiscount && (
             <div className="summary-row">
               <span>原价合计</span>
@@ -455,18 +472,24 @@ export default function DeductConfirmPage() {
           <div className="summary-row"><span>项目消费合计</span><span className="text-pink text-bold">-{formatCurrency(itemsTotal)}</span></div>
           <div className="summary-row"><span>其中：本金扣款</span><span className="text-bold">{formatCurrency(principalUsed)}</span></div>
           <div className="summary-row"><span>其中：赠金抵扣</span><span className="text-green text-bold">{formatCurrency(giftUsed)}</span></div>
-          {makeUpAmount > 0 && (
-            <div className="summary-row"><span>现金/电子支付补足</span><span className="text-bold">{formatCurrency(makeUpAmount)}</span></div>
-          )}
-          {discountApproval && (
+          {actualMakeUp > 0 && (
             <div className="summary-row">
-              <span>折扣授权</span>
-              <span className="text-orange text-bold">{discountApproval.approverName}</span>
+              <span>补差价（{paymentMethodLabels[makeUpMethod]}）</span>
+              <span className="text-bold">{formatCurrency(actualMakeUp)}</span>
+            </div>
+          )}
+          {latestApproval && (
+            <div className="summary-row">
+              <span>折扣授权（{approvalHistory.length} 次授权）</span>
+              <span className="text-orange text-bold">{latestApproval.approverName}</span>
             </div>
           )}
           <div className="summary-row total">
             <span>新余额</span>
-            <span className="amount">{formatCurrency(balance + makeUpAmount - itemsTotal)}</span>
+            <span className="amount">{formatCurrency(newBalance)}</span>
+          </div>
+          <div style={{ marginTop: 10, fontSize: 12, color: '#6b7280' }}>
+            本金 {formatCurrency(currentMember.principal + actualMakeUp - principalUsed)} + 赠金 {formatCurrency(currentMember.gift - giftUsed)} = {formatCurrency(newBalance)}
           </div>
         </div>
 
@@ -524,15 +547,42 @@ export default function DeductConfirmPage() {
               </button>
             </div>
 
-            {discountApproval && (
+            {latestApproval && !needReApproval && (
               <div className="alert alert-warning" style={{ marginBottom: 14 }}>
                 <span className="alert-icon">✅</span>
                 <div>
                   <div className="text-bold">
-                    已获授权：{discountApproval.approverName}（{discountApproval.level === 'manager' ? '店经理' : '主管'}）
+                    已获授权：{latestApproval.approverName}（{latestApproval.level === 'manager' ? '店经理' : '主管'}）
                   </div>
-                  <div style={{ fontSize: 12, marginTop: 2 }}>授权原因：{approvalReason}</div>
+                  <div style={{ fontSize: 12, marginTop: 2 }}>授权原因：{latestApproval.reason}</div>
+                  {approvalHistory.length > 1 && (
+                    <div style={{ fontSize: 12, marginTop: 2, color: '#92400e' }}>
+                      累计 {approvalHistory.length} 次授权（改价后可能触发更高级别）
+                    </div>
+                  )}
                 </div>
+              </div>
+            )}
+
+            {needReApproval && latestApproval && (
+              <div style={{
+                background: '#fef2f2', border: '1px solid #fca5a5', borderRadius: 10,
+                padding: 14, marginBottom: 14,
+              }}>
+                <div className="text-red text-bold" style={{ marginBottom: 6 }}>
+                  ⚠ 折扣力度已超出当前授权范围，需要重新授权！
+                </div>
+                <div style={{ fontSize: 12, color: '#991b1b' }}>
+                  当前折扣触发 <span className={`tag ${riskCfg.bg} ${riskCfg.text}`} style={{ fontSize: 11 }}>{riskCfg.label}</span>，
+                  需要{discountCheck.approvalLevel === 'manager' ? '店经理' : '主管'}重新授权
+                </div>
+                <button
+                  className="btn btn-danger btn-sm"
+                  onClick={openDiscountApproval}
+                  style={{ marginTop: 8, fontSize: 12 }}
+                >
+                  🔐 重新申请授权
+                </button>
               </div>
             )}
 
@@ -557,7 +607,7 @@ export default function DeductConfirmPage() {
                   <div className="form-group">
                     <label className="form-label">
                       单价
-                      {!discountApproval && item.projectId && (
+                      {!latestApproval && item.projectId && (
                         <span className="text-gray" style={{ fontWeight: 400, marginLeft: 6, fontSize: 11 }}>
                           🔒 已锁定
                         </span>
@@ -570,12 +620,12 @@ export default function DeductConfirmPage() {
                       onChange={(e) => handleUnitPriceChange(item.id, parseFloat(e.target.value) || 0)}
                       min="0"
                       step="10"
-                      readOnly={!discountApproval}
+                      readOnly={!latestApproval || needReApproval}
                       style={{
                         color: itemDiscount ? '#dc2626' : '#111827',
                         fontWeight: itemDiscount ? 600 : 400,
-                        background: !discountApproval ? '#f3f4f6' : 'white',
-                        cursor: !discountApproval ? 'not-allowed' : 'text',
+                        background: (!latestApproval || needReApproval) ? '#f3f4f6' : 'white',
+                        cursor: (!latestApproval || needReApproval) ? 'not-allowed' : 'text',
                       }}
                     />
                     {item.originalPrice > 0 && item.unitPrice !== item.originalPrice && (
@@ -745,7 +795,7 @@ export default function DeductConfirmPage() {
             <div className="summary-row"><span>账户余额</span><span>{formatCurrency(balance)}</span></div>
             <div className="summary-row"><span>其中：本金</span><span>{formatCurrency(currentMember.principal)}</span></div>
             <div className="summary-row"><span>其中：赠金</span><span className="text-green">{formatCurrency(currentMember.gift)}</span></div>
-            {balance >= itemsTotal ? (
+            {!needMakeUp ? (
               <>
                 <div className="summary-row"><span>储值扣款（本金）</span><span className="text-pink text-bold">-{formatCurrency(principalUsed)}</span></div>
                 <div className="summary-row"><span>赠金抵扣</span><span className="text-green text-bold">-{formatCurrency(giftUsed)}</span></div>
@@ -775,7 +825,10 @@ export default function DeductConfirmPage() {
                 <div className="alert alert-info" style={{ marginTop: 14, marginBottom: 0 }}>
                   <span className="alert-icon">ℹ️</span>
                   <div style={{ fontSize: 12.5 }}>
-                    将先以所选方式充值 <span className="text-bold">{formatCurrency(actualMakeUp)}</span> 补差价，再全额储值扣款。
+                    补缴 {formatCurrency(actualMakeUp)} 直接入本金后扣款，<strong>只产生一笔交易记录</strong>。
+                    <div style={{ marginTop: 4, lineHeight: 1.6 }}>
+                      本金 +{formatCurrency(actualMakeUp)} → 扣本金 {formatCurrency(principalUsed)}，扣赠金 {formatCurrency(giftUsed)}
+                    </div>
                     <div className="text-red text-bold" style={{ marginTop: 4 }}>🔒 禁止直接修改项目单价来免补缴！</div>
                   </div>
                 </div>
@@ -784,12 +837,17 @@ export default function DeductConfirmPage() {
             <div className="summary-row total">
               <span>扣后余额</span>
               <span className="amount">
-                {formatCurrency(Math.max(0, balance + makeUpAmount - itemsTotal))}
+                {formatCurrency(balance + actualMakeUp - itemsTotal)}
               </span>
             </div>
+            {needMakeUp && (
+              <div style={{ fontSize: 12, color: '#6b7280', marginTop: 4 }}>
+                = 本金 {formatCurrency(currentMember.principal + actualMakeUp - principalUsed)} + 赠金 {formatCurrency(currentMember.gift - giftUsed)}
+              </div>
+            )}
           </div>
 
-          {!discountApproval && (
+          {!latestApproval && (
             <div className="summary-box" style={{ marginTop: 16, background: '#fef2f2', borderColor: '#fecaca' }}>
               <div className="summary-row">
                 <span className="text-red text-bold">🔒 价格锁定</span>
@@ -800,14 +858,31 @@ export default function DeductConfirmPage() {
                 余额不足时必须引导顾客补缴。
                 <br />如确有特殊折扣，需点击上方「申请特殊折扣」按钮，
                 由主管/经理授权后方可改价。
+                <br />改价后若折扣力度超出已授权范围，需重新申请更高级别授权。
               </div>
+            </div>
+          )}
+
+          {approvalHistory.length > 0 && (
+            <div className="summary-box" style={{ marginTop: 16, background: '#f5f3ff', borderColor: '#ddd6fe' }}>
+              <div className="summary-row">
+                <span className="text-bold" style={{ color: '#5b21b6' }}>🔐 授权记录</span>
+                <span className="tag tag-purple" style={{ fontSize: 11 }}>{approvalHistory.length} 次授权</span>
+              </div>
+              {approvalHistory.map((a, idx) => (
+                <div key={idx} style={{ fontSize: 12, marginTop: 6, color: '#6b7280', borderBottom: idx < approvalHistory.length - 1 ? '1px solid #e9d5ff' : 'none', paddingBottom: 6 }}>
+                  <span className="text-bold">{a.approverName}</span>（{a.level === 'manager' ? '店经理' : '主管'}）
+                  {formatCurrency(a.originalTotal)} → {formatCurrency(a.approvedTotal)}，
+                  原因：{a.reason}
+                </div>
+              ))}
             </div>
           )}
 
           <div className="action-bar" style={{ marginTop: 20 }}>
             <button className="btn btn-secondary" onClick={() => navigate('/member')}>返回</button>
             <button className="btn btn-primary" onClick={handleSubmit} disabled={!canSubmit}>
-              确认扣款
+              {needReApproval ? '需重新授权' : '确认扣款'}
             </button>
           </div>
         </div>
@@ -823,10 +898,17 @@ export default function DeductConfirmPage() {
             boxShadow: '0 20px 60px rgba(0,0,0,0.2)',
           }}>
             <div style={{ fontSize: 44, textAlign: 'center', marginBottom: 12 }}>🔐</div>
-            <h3 style={{ textAlign: 'center', marginBottom: 4 }}>折扣授权</h3>
+            <h3 style={{ textAlign: 'center', marginBottom: 4 }}>
+              {needReApproval ? '重新授权' : '折扣授权'}
+            </h3>
             <p style={{ textAlign: 'center', color: '#6b7280', fontSize: 13, marginBottom: 6 }}>
               当前折扣力度触发 <span className={`tag ${riskCfg.bg} ${riskCfg.text}`} style={{ fontSize: 12 }}>{riskCfg.label}</span>
             </p>
+            {needReApproval && (
+              <p style={{ textAlign: 'center', color: '#dc2626', fontSize: 12, marginBottom: 6 }}>
+                之前授权后折扣力度已加大，需更高级别授权
+              </p>
+            )}
             <p style={{ textAlign: 'center', color: '#9ca3af', fontSize: 12, marginBottom: 20 }}>
               需要{discountCheck.approvalLevel === 'manager' ? '店经理' : '主管'}现场授权
               <br />（演示密码：主管 123456 / 店经理 888888）

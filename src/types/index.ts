@@ -6,6 +6,8 @@ export type TransactionStatus = 'pending' | 'completed' | 'cancelled' | 'voided'
 
 export type RiskLevel = 'low' | 'medium' | 'high' | 'critical'
 
+export type ReviewStatus = 'unreviewed' | 'reviewed' | 'escalated'
+
 export type ApprovalLevel = 'none' | 'supervisor' | 'manager'
 
 export interface Member {
@@ -60,6 +62,7 @@ export interface DiscountDetail {
   discountAmount: number
   finalAmount: number
   discountRatio: number
+  valueDiscountRatio?: number
   authorizationType: 'none' | 'supervisor' | 'manager'
   authorizedById?: string
   authorizedByName?: string
@@ -107,6 +110,10 @@ export interface Transaction {
   receiptPrintCount: number
   manualAdjusted: boolean
   originalAmount?: number
+  reviewStatus: ReviewStatus
+  reviewer?: string
+  reviewNote?: string
+  reviewedAt?: string
 }
 
 export interface Cashier {

@@ -9,8 +9,9 @@ import {
   levelColorMap,
   paymentMethodLabels,
   riskLevelConfig,
+  calcValueDiscountRatio,
 } from '../utils/rules'
-import type { Package, PaymentMethod, RiskLevel, ApprovalLevel } from '../types'
+import type { Package, PaymentMethod, RiskLevel, ApprovalLevel, DiscountDetail } from '../types'
 
 export default function RechargeValidatePage() {
   const navigate = useNavigate()
@@ -200,6 +201,24 @@ export default function RechargeValidatePage() {
     const actualPayerName = isThirdPartyPayer ? payerName.trim() : currentMember.name
     const actualPayerPhone = isThirdPartyPayer ? payerPhone.trim() : currentMember.phone
 
+    const totalValue = rechargeAmount + giftAmount
+    const valueRatio = giftAmount > 0 ? calcValueDiscountRatio(rechargeAmount, totalValue) : undefined
+
+    let discountDetail: DiscountDetail | undefined
+    if (selectedPkg && giftAmount > 0) {
+      discountDetail = {
+        originalAmount: selectedPkg.originalPrice,
+        discountAmount: selectedPkg.originalPrice - totalValue,
+        finalAmount: totalValue,
+        discountRatio: totalValue / selectedPkg.originalPrice,
+        valueDiscountRatio: valueRatio,
+        authorizationType: approvalLevel || 'none',
+        authorizedById: approverId,
+        authorizedByName: approverName,
+        authorizationReason: approvalReason || undefined,
+      }
+    }
+
     const tx = createTransaction({
       type: 'recharge',
       memberId: currentMember.id,
@@ -217,6 +236,7 @@ export default function RechargeValidatePage() {
       riskDetails: ruleResult.warnings.length > 0 ? ruleResult.warnings : undefined,
       warningFlags: ruleResult.warnings.length > 0 ? ruleResult.warnings : undefined,
       approvalRecords,
+      discountDetail,
       remarks: approvalReason ? `授权原因: ${approvalReason}` : undefined,
     })
 
@@ -350,6 +370,10 @@ export default function RechargeValidatePage() {
                     <span className="package-original">{formatCurrency(pkg.originalPrice)}</span>
                   </div>
                   <span className="package-gift">赠 {formatCurrency(pkg.giftAmount)}</span>
+                  <div style={{ fontSize: 11, color: pkg.packagePrice / (pkg.packagePrice + pkg.giftAmount) <= 0.7 ? '#dc2626' : '#6b7280', marginTop: 4 }}>
+                    权益比 {(pkg.packagePrice / (pkg.packagePrice + pkg.giftAmount) * 100).toFixed(1)}%
+                    （付{formatCurrency(pkg.packagePrice)}获{formatCurrency(pkg.packagePrice + pkg.giftAmount)}）
+                  </div>
                 </div>
               ))}
             </div>
@@ -596,6 +620,14 @@ export default function RechargeValidatePage() {
           <div className="summary-box">
             <div className="summary-row"><span>储值本金</span><span className="text-bold">{formatCurrency(rechargeAmount)}</span></div>
             <div className="summary-row"><span>赠送金额</span><span className="text-green text-bold">+{formatCurrency(giftAmount)}</span></div>
+            {giftAmount > 0 && rechargeAmount > 0 && (
+              <div className="summary-row">
+                <span>权益折扣比</span>
+                <span style={{ color: calcValueDiscountRatio(rechargeAmount, rechargeAmount + giftAmount) <= 0.7 ? '#dc2626' : '#111827', fontWeight: calcValueDiscountRatio(rechargeAmount, rechargeAmount + giftAmount) <= 0.7 ? 600 : 400 }}>
+                  {(calcValueDiscountRatio(rechargeAmount, rechargeAmount + giftAmount) * 100).toFixed(1)}%
+                </span>
+              </div>
+            )}
             <div className="summary-row"><span>支付方式</span><span>{paymentMethodLabels[paymentMethod]}</span></div>
             {isThirdPartyPayer && (
               <div className="summary-row"><span>代付人</span><span className="text-bold">{payerName || '待填写'}</span></div>

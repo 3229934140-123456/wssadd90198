@@ -220,6 +220,7 @@ export const mockTransactions: Transaction[] = [
     updatedAt: '2026-06-22 09:18:22',
     receiptPrintCount: 1,
     manualAdjusted: false,
+    reviewStatus: 'unreviewed',
   },
   {
     id: 't002',
@@ -243,6 +244,7 @@ export const mockTransactions: Transaction[] = [
     updatedAt: '2026-06-22 10:32:15',
     receiptPrintCount: 3,
     manualAdjusted: false,
+    reviewStatus: 'unreviewed',
   },
   {
     id: 't003',
@@ -270,6 +272,7 @@ export const mockTransactions: Transaction[] = [
     updatedAt: '2026-06-22 11:47:30',
     receiptPrintCount: 1,
     manualAdjusted: false,
+    reviewStatus: 'unreviewed',
   },
   {
     id: 't004',
@@ -292,6 +295,7 @@ export const mockTransactions: Transaction[] = [
     updatedAt: '2026-06-22 14:22:40',
     receiptPrintCount: 1,
     manualAdjusted: false,
+    reviewStatus: 'unreviewed',
   },
   {
     id: 't005',
@@ -333,6 +337,7 @@ export const mockTransactions: Transaction[] = [
     updatedAt: '2026-06-22 15:12:00',
     receiptPrintCount: 0,
     manualAdjusted: false,
+    reviewStatus: 'unreviewed',
   },
   {
     id: 't006',
@@ -370,6 +375,7 @@ export const mockTransactions: Transaction[] = [
     updatedAt: '2026-06-22 16:33:20',
     receiptPrintCount: 1,
     manualAdjusted: true,
+    reviewStatus: 'reviewed',
     originalAmount: 13800,
   },
 ]

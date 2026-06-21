@@ -7,8 +7,11 @@ import {
   riskLevelConfig,
   maskPhone,
   maskName,
+  reviewStatusLabels,
+  reviewStatusTags,
+  calcValueDiscountRatio,
 } from '../utils/rules'
-import type { Transaction, PaymentMethod, RiskLevel } from '../types'
+import type { Transaction, PaymentMethod, RiskLevel, ReviewStatus } from '../types'
 
 export default function ShiftSummaryPage() {
   const currentShift = useAppStore((s) => s.currentShift)
@@ -19,6 +22,7 @@ export default function ShiftSummaryPage() {
   const incrementReceiptPrint = useAppStore((s) => s.incrementReceiptPrint)
   const closeShift = useAppStore((s) => s.closeShift)
   const members = useAppStore((s) => s.members)
+  const reviewTransaction = useAppStore((s) => s.reviewTransaction)
 
   const [selectedTx, setSelectedTx] = useState<string | null>(null)
   const [cancelReason, setCancelReason] = useState('')
@@ -34,6 +38,12 @@ export default function ShiftSummaryPage() {
   const [filterPayMethod, setFilterPayMethod] = useState<PaymentMethod | ''>('')
   const [filterAbnormalType, setFilterAbnormalType] = useState('')
   const [filterTxType, setFilterTxType] = useState<string>('')
+
+  const [showReview, setShowReview] = useState(false)
+  const [reviewTxId, setReviewTxId] = useState<string | null>(null)
+  const [reviewStatus, setReviewStatus] = useState<ReviewStatus>('reviewed')
+  const [reviewer, setReviewer] = useState('')
+  const [reviewNote, setReviewNote] = useState('')
 
   const shiftTxs = useMemo(() => {
     const start = new Date(currentShift.startedAt)
@@ -73,6 +83,12 @@ export default function ShiftSummaryPage() {
         result = result.filter((t) => t.approvalRecords && t.approvalRecords.length > 0)
       } else if (filterAbnormalType === 'cancelled') {
         result = result.filter((t) => t.status === 'cancelled')
+      } else if (filterAbnormalType === 'review_unreviewed') {
+        result = result.filter((t) => t.reviewStatus === 'unreviewed')
+      } else if (filterAbnormalType === 'review_reviewed') {
+        result = result.filter((t) => t.reviewStatus === 'reviewed')
+      } else if (filterAbnormalType === 'review_escalated') {
+        result = result.filter((t) => t.reviewStatus === 'escalated')
       }
     }
 
@@ -91,6 +107,9 @@ export default function ShiftSummaryPage() {
     { value: 'has_third_party', label: '代付交易' },
     { value: 'has_approval', label: '有授权记录' },
     { value: 'cancelled', label: '已取消' },
+    { value: 'review_unreviewed', label: '未复核' },
+    { value: 'review_reviewed', label: '已复核' },
+    { value: 'review_escalated', label: '需上报' },
   ]
 
   const handlePrint = (txId: string) => {
@@ -125,6 +144,29 @@ export default function ShiftSummaryPage() {
     setSelectedTx(null)
   }
 
+  const openReview = (txId: string) => {
+    setReviewTxId(txId)
+    const tx = transactions.find((t) => t.id === txId)
+    if (tx) {
+      setReviewStatus(tx.reviewStatus === 'unreviewed' ? 'reviewed' : tx.reviewStatus)
+    }
+    setReviewer('')
+    setReviewNote('')
+    setShowReview(true)
+  }
+
+  const doReview = () => {
+    if (!reviewTxId || !reviewer.trim()) {
+      alert('请填写复核人')
+      return
+    }
+    reviewTransaction(reviewTxId, reviewStatus, reviewer, reviewNote)
+    setShowReview(false)
+    setReviewTxId(null)
+    setReviewer('')
+    setReviewNote('')
+  }
+
   const shiftLabel =
     currentShift.shift === 'morning'
       ? '早班'
@@ -148,6 +190,15 @@ export default function ShiftSummaryPage() {
     return (
       <span className={`tag ${cfg.bg} ${cfg.text}`} style={{ fontSize: 11 }}>
         {cfg.label}
+      </span>
+    )
+  }
+
+  const getReviewStatusTag = (status: ReviewStatus) => {
+    const cfg = reviewStatusTags[status]
+    return (
+      <span className={`tag ${cfg.bg} ${cfg.text}`} style={{ fontSize: 11 }}>
+        {reviewStatusLabels[status]}
       </span>
     )
   }
@@ -358,6 +409,7 @@ export default function ShiftSummaryPage() {
                 <th>金额</th>
                 <th>支付方式</th>
                 <th>状态</th>
+                <th>复核状态</th>
                 <th>风险/异常</th>
                 <th>时间</th>
                 <th>操作</th>
@@ -397,6 +449,7 @@ export default function ShiftSummaryPage() {
                     {tx.status === 'cancelled' && '已取消'}
                     {tx.status === 'voided' && '已作废'}
                   </td>
+                  <td>{getReviewStatusTag(tx.reviewStatus)}</td>
                   <td>
                     {tx.riskLevel && tx.riskLevel !== 'low' && getRiskBadge(tx.riskLevel)}
                     {tx.discountDetail && tx.discountDetail.discountAmount > 0 && (
@@ -435,6 +488,15 @@ export default function ShiftSummaryPage() {
                           style={{ padding: '6px 10px', fontSize: 12 }}
                         >
                           ✍️
+                        </button>
+                      )}
+                      {tx.status === 'completed' && (
+                        <button
+                          className="btn btn-secondary btn-sm"
+                          onClick={() => openReview(tx.id)}
+                          style={{ padding: '6px 10px', fontSize: 12 }}
+                        >
+                          🔍 复核
                         </button>
                       )}
                       {tx.status === 'completed' && currentShift.status === 'active' && (
@@ -543,6 +605,60 @@ export default function ShiftSummaryPage() {
             )}
             <div style={{ textAlign: 'right', marginTop: 16 }}>
               <button className="btn btn-secondary" onClick={() => { setShowSignature(false); setSignatureTxId(null) }}>关闭</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showReview && reviewTxId && (
+        <div style={{
+          position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex',
+          alignItems: 'center', justifyContent: 'center', zIndex: 1000,
+        }}>
+          <div style={{
+            background: 'white', borderRadius: 16, padding: 28, width: 420,
+            boxShadow: '0 20px 60px rgba(0,0,0,0.2)',
+          }}>
+            <div style={{ fontSize: 40, textAlign: 'center', marginBottom: 12 }}>🔍</div>
+            <h3 style={{ textAlign: 'center', marginBottom: 4 }}>交易复核</h3>
+            <p className="text-gray" style={{ textAlign: 'center', fontSize: 13, marginBottom: 20 }}>
+              交易单号：{transactions.find((t) => t.id === reviewTxId)?.transactionNo}
+            </p>
+            <div className="form-group">
+              <label className="form-label">复核状态</label>
+              <select
+                className="form-select"
+                value={reviewStatus}
+                onChange={(e) => setReviewStatus(e.target.value as ReviewStatus)}
+              >
+                <option value="reviewed">已复核</option>
+                <option value="escalated">需上报</option>
+              </select>
+            </div>
+            <div className="form-group">
+              <label className="form-label">复核人（必填）</label>
+              <input
+                className="form-input"
+                type="text"
+                value={reviewer}
+                onChange={(e) => setReviewer(e.target.value)}
+                placeholder="请输入复核人姓名"
+              />
+            </div>
+            <div className="form-group">
+              <label className="form-label">复核备注</label>
+              <textarea
+                className="form-input"
+                value={reviewNote}
+                onChange={(e) => setReviewNote(e.target.value)}
+                placeholder="请输入复核备注（选填）"
+                rows={3}
+                style={{ resize: 'vertical' }}
+              />
+            </div>
+            <div style={{ display: 'flex', gap: 10, marginTop: 16 }}>
+              <button className="btn btn-secondary" style={{ flex: 1 }} onClick={() => { setShowReview(false); setReviewTxId(null); setReviewer(''); setReviewNote('') }}>返回</button>
+              <button className="btn btn-primary" style={{ flex: 1 }} onClick={doReview}>确认复核</button>
             </div>
           </div>
         </div>
@@ -676,6 +792,17 @@ export default function ShiftSummaryPage() {
                           </span>
                         </span>
                       </div>
+                      {detailTransaction.discountDetail.valueDiscountRatio != null && (
+                        <div className="summary-row">
+                          <span>权益折扣比</span>
+                          <span className="text-bold">
+                            {(calcValueDiscountRatio(
+                              detailTransaction.amount,
+                              detailTransaction.discountDetail.originalAmount,
+                            ) * 100).toFixed(1)}%
+                          </span>
+                        </div>
+                      )}
                     </div>
                   )}
 
@@ -683,7 +810,12 @@ export default function ShiftSummaryPage() {
                   <div className="summary-row"><span>赠金抵扣</span><span className="text-green text-bold">{formatCurrency(detailTransaction.giftUsed || 0)}</span></div>
                   {detailTransaction.makeUpAmount && detailTransaction.makeUpAmount > 0 && (
                     <div className="summary-row">
-                      <span>补差价（{paymentMethodLabels[detailTransaction.makeUpMethod || 'cash']}）</span>
+                      <span>
+                        补差价（{paymentMethodLabels[detailTransaction.makeUpMethod || 'cash']}）
+                        <span style={{ fontSize: 11, color: '#6b7280', marginLeft: 6 }}>
+                          补缴已合并入本笔交易，仅一笔入账
+                        </span>
+                      </span>
                       <span className="text-bold">{formatCurrency(detailTransaction.makeUpAmount)}</span>
                     </div>
                   )}
@@ -791,6 +923,37 @@ export default function ShiftSummaryPage() {
                 </div>
               )}
 
+              <div style={{
+                background: '#eff6ff', padding: 16, borderRadius: 12,
+                border: '1px solid #bfdbfe', marginBottom: 20,
+              }}>
+                <div style={{ fontWeight: 600, marginBottom: 12, fontSize: 14, color: '#1e40af' }}>
+                  🔍 复核信息
+                </div>
+                <div className="summary-row">
+                  <span>复核状态</span>
+                  <span>{getReviewStatusTag(detailTransaction.reviewStatus)}</span>
+                </div>
+                {detailTransaction.reviewer && (
+                  <div className="summary-row">
+                    <span>复核人</span>
+                    <span className="text-bold">{detailTransaction.reviewer}</span>
+                  </div>
+                )}
+                {detailTransaction.reviewNote && (
+                  <div className="summary-row">
+                    <span>复核备注</span>
+                    <span>{detailTransaction.reviewNote}</span>
+                  </div>
+                )}
+                {detailTransaction.reviewedAt && (
+                  <div className="summary-row">
+                    <span>复核时间</span>
+                    <span>{detailTransaction.reviewedAt}</span>
+                  </div>
+                )}
+              </div>
+
               {(detailTransaction.warningFlags && detailTransaction.warningFlags.length > 0) && (
                 <div style={{
                   background: '#fef2f2', padding: 16, borderRadius: 12,
@@ -873,6 +1036,17 @@ export default function ShiftSummaryPage() {
               gap: 10,
               justifyContent: 'flex-end',
             }}>
+              {detailTransaction.status === 'completed' && detailTransaction.reviewStatus === 'unreviewed' && (
+                <button
+                  className="btn btn-primary"
+                  onClick={() => {
+                    setShowDetailDrawer(false)
+                    openReview(detailTransaction.id)
+                  }}
+                >
+                  🔍 复核
+                </button>
+              )}
               <button
                 className="btn btn-secondary"
                 onClick={() => handlePrint(detailTransaction.id)}

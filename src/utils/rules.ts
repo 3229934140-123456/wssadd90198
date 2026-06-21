@@ -1,4 +1,4 @@
-import { RuleCheckResult, RuleDetail, Member, Transaction, Package, RiskLevel, TransactionItem } from '../types'
+import { RuleCheckResult, RuleDetail, Member, Transaction, Package, RiskLevel, TransactionItem, DiscountDetail } from '../types'
 
 const LARGE_AMOUNT_THRESHOLD = 50000
 const VERY_LARGE_AMOUNT_THRESHOLD = 100000
@@ -98,26 +98,28 @@ export const checkRechargeRules = (
     })
   }
 
-  // 规则2：低价囤卡风险（套餐优惠率）
+  // 规则2：低价囤卡风险（按实际付款/到账权益比判断）
   if (pkg) {
-    const actualValue = pkg.packagePrice + pkg.giftAmount
-    const actualRatio = actualValue / pkg.originalPrice
-    if (actualRatio <= VERY_LOW_PRICE_RATIO_THRESHOLD) {
+    const totalValue = pkg.packagePrice + pkg.giftAmount
+    const valueRatio = pkg.packagePrice / totalValue
+    const catalogRatio = totalValue / pkg.originalPrice
+    const effectiveRatio = Math.min(valueRatio, catalogRatio)
+    if (effectiveRatio <= VERY_LOW_PRICE_RATIO_THRESHOLD) {
       ruleDetails.push({
         key: 'low_price_critical',
         name: '极低折扣套餐',
         passed: false,
         riskLevel: 'critical',
-        message: `「${pkg.name}」实际价值/原价 = ${(actualRatio * 100).toFixed(1)}%，低于 ${(VERY_LOW_PRICE_RATIO_THRESHOLD * 100).toFixed(0)}% 红线`,
-        suggestion: '必须店经理授权，注意是否属于违规促销或刷单行为',
+        message: `「${pkg.name}」实付/到账权益比 = ${(valueRatio * 100).toFixed(1)}%，低于 ${(VERY_LOW_PRICE_RATIO_THRESHOLD * 100).toFixed(0)}% 红线（付${formatCurrency(pkg.packagePrice)}获${formatCurrency(totalValue)}权益）`,
+        suggestion: '必须店经理授权，注意是否属于违规促销或刷单行为，建议留存促销审批文件',
       })
-    } else if (actualRatio <= LOW_PRICE_RATIO_THRESHOLD) {
+    } else if (effectiveRatio <= LOW_PRICE_RATIO_THRESHOLD) {
       ruleDetails.push({
         key: 'low_price_high',
         name: '低折扣套餐',
         passed: false,
         riskLevel: 'high',
-        message: `「${pkg.name}」实际价值/原价 = ${(actualRatio * 100).toFixed(1)}%，低于 ${(LOW_PRICE_RATIO_THRESHOLD * 100).toFixed(0)}% 警戒线`,
+        message: `「${pkg.name}」实付/到账权益比 = ${(valueRatio * 100).toFixed(1)}%，低于 ${(LOW_PRICE_RATIO_THRESHOLD * 100).toFixed(0)}% 警戒线（付${formatCurrency(pkg.packagePrice)}获${formatCurrency(totalValue)}权益）`,
         suggestion: '需要主管授权，提醒客户赠金不兑现、不找零、不开票',
       })
     } else {
@@ -126,7 +128,7 @@ export const checkRechargeRules = (
         name: '套餐折扣校验',
         passed: true,
         riskLevel: 'low',
-        message: `「${pkg.name}」优惠率 ${(actualRatio * 100).toFixed(1)}%，在正常范围内`,
+        message: `「${pkg.name}」权益折扣比 ${(valueRatio * 100).toFixed(1)}%，在正常范围内（付${formatCurrency(pkg.packagePrice)}获${formatCurrency(totalValue)}权益）`,
         suggestion: '',
       })
     }
@@ -337,4 +339,24 @@ export const transactionTypeLabels: Record<string, string> = {
   deduct: '项目扣款',
   refund: '退款',
   adjust: '手工调账',
+}
+
+export const calcValueDiscountRatio = (
+  actualPayment: number,
+  totalValue: number,
+): number => {
+  if (totalValue <= 0) return 1
+  return actualPayment / totalValue
+}
+
+export const reviewStatusLabels: Record<string, string> = {
+  unreviewed: '未复核',
+  reviewed: '已复核',
+  escalated: '需上报',
+}
+
+export const reviewStatusTags: Record<string, { bg: string; text: string }> = {
+  unreviewed: { bg: 'bg-red-50', text: 'text-red-700' },
+  reviewed: { bg: 'bg-green-50', text: 'text-green-700' },
+  escalated: { bg: 'bg-orange-50', text: 'text-orange-700' },
 }
