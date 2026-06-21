@@ -273,6 +273,11 @@ export const mockTransactions: Transaction[] = [
     receiptPrintCount: 1,
     manualAdjusted: false,
     reviewStatus: 'unreviewed',
+    riskSuggestions: [
+      '需要主管授权，建议确认客户是否了解储值协议和退款规则',
+      '需要主管授权，确认客户是否为真实消费',
+    ],
+    followSuggestion: true,
   },
   {
     id: 't004',
@@ -377,6 +382,15 @@ export const mockTransactions: Transaction[] = [
     manualAdjusted: true,
     reviewStatus: 'reviewed',
     originalAmount: 13800,
+    riskSuggestions: [
+      '需要主管授权，确认是否符合当期促销活动',
+      '建议确认折扣理由，系统自动记录',
+    ],
+    followSuggestion: true,
+    reviewResult: 'approved',
+    reviewer: '张主管',
+    reviewNote: '符合当月老客户特惠活动，折扣合理',
+    reviewedAt: '2026-06-22 17:00:00',
   },
 ]
 

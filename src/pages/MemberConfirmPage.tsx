@@ -71,7 +71,16 @@ export default function MemberConfirmPage() {
       </div>
 
       <div className="section">
-        <h3 className="section-title">最近消费记录</h3>
+        <h3 className="section-title">
+          最近消费记录
+          <button
+            className="btn btn-secondary btn-sm"
+            onClick={() => navigate('/flow')}
+            style={{ marginLeft: 12, fontSize: 12, padding: '4px 12px' }}
+          >
+            📋 查看完整账户流水
+          </button>
+        </h3>
         {memberTxs.length === 0 ? (
           <div className="empty-state">
             <div className="empty-icon">📋</div>

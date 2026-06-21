@@ -13,6 +13,7 @@ import {
   RiskLevel,
   DiscountDetail,
   ReviewStatus,
+  ReviewResult,
 } from '../types'
 import {
   mockMembers,
@@ -51,6 +52,8 @@ interface CreateTransactionParams {
   makeUpMethod?: PaymentMethod
   principalUsed?: number
   giftUsed?: number
+  riskSuggestions?: string[]
+  followSuggestion?: boolean
 }
 
 interface AppState {
@@ -80,7 +83,7 @@ interface AppState {
   closeShift: () => ShiftSummary
   addAbnormalAlert: (alert: Omit<AbnormalAlert, 'id' | 'timestamp'>) => void
   clearAbnormalAlerts: () => void
-  reviewTransaction: (transactionId: string, status: ReviewStatus, reviewer: string, note: string) => void
+  reviewTransaction: (transactionId: string, status: ReviewStatus, reviewer: string, note: string, result?: ReviewResult) => void
 }
 
 const generateId = () => Math.random().toString(36).substring(2, 12)
@@ -209,6 +212,8 @@ export const useAppStore = create<AppState>()(
           manualAdjusted: !!data.discountDetail && data.discountDetail.discountAmount > 0,
           originalAmount: data.discountDetail?.originalAmount,
           reviewStatus: 'unreviewed',
+          riskSuggestions: data.riskSuggestions,
+          followSuggestion: data.followSuggestion,
         }
 
         set((state) => {
@@ -471,7 +476,7 @@ export const useAppStore = create<AppState>()(
 
       clearAbnormalAlerts: () => set({ abnormalAlerts: [] }),
 
-      reviewTransaction: (transactionId, status, reviewer, note) => {
+      reviewTransaction: (transactionId, status, reviewer, note, result) => {
         set((state) => {
           const tx = state.transactions.find((t) => t.id === transactionId)
           if (!tx) return state
@@ -481,6 +486,7 @@ export const useAppStore = create<AppState>()(
             reviewer: reviewer || undefined,
             reviewNote: note || undefined,
             reviewedAt: nowStr(),
+            reviewResult: result || undefined,
             updatedAt: nowStr(),
           }
           return {

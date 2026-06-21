@@ -360,3 +360,21 @@ export const reviewStatusTags: Record<string, { bg: string; text: string }> = {
   reviewed: { bg: 'bg-green-50', text: 'text-green-700' },
   escalated: { bg: 'bg-orange-50', text: 'text-orange-700' },
 }
+
+export const reviewResultLabels: Record<string, string> = {
+  pending: '待处理',
+  approved: '同意通过',
+  escalated: '上报处理',
+  rejected: '驳回申请',
+  adjusted: '已调账',
+  refunded: '已退款',
+}
+
+export const reviewResultTags: Record<string, { bg: string; text: string }> = {
+  pending: { bg: 'bg-gray-50', text: 'text-gray-700' },
+  approved: { bg: 'bg-green-50', text: 'text-green-700' },
+  escalated: { bg: 'bg-orange-50', text: 'text-orange-700' },
+  rejected: { bg: 'bg-red-50', text: 'text-red-700' },
+  adjusted: { bg: 'bg-blue-50', text: 'text-blue-700' },
+  refunded: { bg: 'bg-purple-50', text: 'text-purple-700' },
+}

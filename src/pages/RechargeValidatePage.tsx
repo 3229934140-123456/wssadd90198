@@ -234,6 +234,8 @@ export default function RechargeValidatePage() {
       isThirdPartyPayer,
       riskLevel: ruleResult.overallRiskLevel,
       riskDetails: ruleResult.warnings.length > 0 ? ruleResult.warnings : undefined,
+      riskSuggestions: ruleResult.suggestions.length > 0 ? ruleResult.suggestions : undefined,
+      followSuggestion: ruleResult.suggestions.length > 0 ? false : undefined,
       warningFlags: ruleResult.warnings.length > 0 ? ruleResult.warnings : undefined,
       approvalRecords,
       discountDetail,

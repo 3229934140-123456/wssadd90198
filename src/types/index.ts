@@ -8,6 +8,8 @@ export type RiskLevel = 'low' | 'medium' | 'high' | 'critical'
 
 export type ReviewStatus = 'unreviewed' | 'reviewed' | 'escalated'
 
+export type ReviewResult = 'pending' | 'approved' | 'escalated' | 'rejected' | 'adjusted' | 'refunded'
+
 export type ApprovalLevel = 'none' | 'supervisor' | 'manager'
 
 export interface Member {
@@ -114,6 +116,9 @@ export interface Transaction {
   reviewer?: string
   reviewNote?: string
   reviewedAt?: string
+  riskSuggestions?: string[]
+  followSuggestion?: boolean
+  reviewResult?: ReviewResult
 }
 
 export interface Cashier {

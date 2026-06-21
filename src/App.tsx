@@ -5,6 +5,7 @@ import MemberConfirmPage from './pages/MemberConfirmPage'
 import RechargeValidatePage from './pages/RechargeValidatePage'
 import DeductConfirmPage from './pages/DeductConfirmPage'
 import ShiftSummaryPage from './pages/ShiftSummaryPage'
+import MemberAccountFlowPage from './pages/MemberAccountFlowPage'
 
 const navItems = [
   { key: 'scan', label: '扫码识别', path: '/scan', num: 1, icon: '📷' },
@@ -106,6 +107,7 @@ export default function App() {
           <Route path="/recharge" element={<RechargeValidatePage />} />
           <Route path="/deduct" element={<DeductConfirmPage />} />
           <Route path="/shift" element={<ShiftSummaryPage />} />
+          <Route path="/flow" element={<MemberAccountFlowPage />} />
           <Route path="*" element={<Navigate to="/scan" replace />} />
         </Routes>
       </div>

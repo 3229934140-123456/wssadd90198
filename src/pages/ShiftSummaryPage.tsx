@@ -1,4 +1,5 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useState, useEffect } from 'react'
+import { useLocation } from 'react-router-dom'
 import { useAppStore } from '../store/useAppStore'
 import {
   formatCurrency,
@@ -9,9 +10,11 @@ import {
   maskName,
   reviewStatusLabels,
   reviewStatusTags,
+  reviewResultLabels,
+  reviewResultTags,
   calcValueDiscountRatio,
 } from '../utils/rules'
-import type { Transaction, PaymentMethod, RiskLevel, ReviewStatus } from '../types'
+import type { Transaction, PaymentMethod, RiskLevel, ReviewStatus, ReviewResult } from '../types'
 
 export default function ShiftSummaryPage() {
   const currentShift = useAppStore((s) => s.currentShift)
@@ -23,6 +26,7 @@ export default function ShiftSummaryPage() {
   const closeShift = useAppStore((s) => s.closeShift)
   const members = useAppStore((s) => s.members)
   const reviewTransaction = useAppStore((s) => s.reviewTransaction)
+  const location = useLocation()
 
   const [selectedTx, setSelectedTx] = useState<string | null>(null)
   const [cancelReason, setCancelReason] = useState('')
@@ -38,12 +42,27 @@ export default function ShiftSummaryPage() {
   const [filterPayMethod, setFilterPayMethod] = useState<PaymentMethod | ''>('')
   const [filterAbnormalType, setFilterAbnormalType] = useState('')
   const [filterTxType, setFilterTxType] = useState<string>('')
+  const [filterReviewResult, setFilterReviewResult] = useState<string>('')
 
   const [showReview, setShowReview] = useState(false)
   const [reviewTxId, setReviewTxId] = useState<string | null>(null)
   const [reviewStatus, setReviewStatus] = useState<ReviewStatus>('reviewed')
   const [reviewer, setReviewer] = useState('')
   const [reviewNote, setReviewNote] = useState('')
+  const [reviewResult, setReviewResult] = useState<ReviewResult>('approved')
+  const [followSuggestion, setFollowSuggestion] = useState<boolean | undefined>(undefined)
+
+  const [highlightTxId, setHighlightTxId] = useState<string | null>(null)
+
+  useEffect(() => {
+    const state = location.state as { highlightTxId?: string } | null
+    if (state?.highlightTxId) {
+      setHighlightTxId(state.highlightTxId)
+      setDetailTxId(state.highlightTxId)
+      setShowDetailDrawer(true)
+      window.history.replaceState({}, document.title)
+    }
+  }, [location])
 
   const shiftTxs = useMemo(() => {
     const start = new Date(currentShift.startedAt)
@@ -92,8 +111,12 @@ export default function ShiftSummaryPage() {
       }
     }
 
+    if (filterReviewResult) {
+      result = result.filter((t) => t.reviewResult === filterReviewResult)
+    }
+
     return result
-  }, [shiftTxs, filterMember, filterPayMethod, filterAbnormalType, filterTxType])
+  }, [shiftTxs, filterMember, filterPayMethod, filterAbnormalType, filterTxType, filterReviewResult])
 
   const detailTransaction = useMemo(() => {
     if (!detailTxId) return null
@@ -110,6 +133,16 @@ export default function ShiftSummaryPage() {
     { value: 'review_unreviewed', label: '未复核' },
     { value: 'review_reviewed', label: '已复核' },
     { value: 'review_escalated', label: '需上报' },
+  ]
+
+  const reviewResultOptions = [
+    { value: '', label: '全部处理结果' },
+    { value: 'pending', label: '待处理' },
+    { value: 'approved', label: '同意通过' },
+    { value: 'escalated', label: '上报处理' },
+    { value: 'rejected', label: '驳回申请' },
+    { value: 'adjusted', label: '已调账' },
+    { value: 'refunded', label: '已退款' },
   ]
 
   const handlePrint = (txId: string) => {
@@ -149,6 +182,8 @@ export default function ShiftSummaryPage() {
     const tx = transactions.find((t) => t.id === txId)
     if (tx) {
       setReviewStatus(tx.reviewStatus === 'unreviewed' ? 'reviewed' : tx.reviewStatus)
+      setReviewResult(tx.reviewResult || 'approved')
+      setFollowSuggestion(tx.followSuggestion)
     }
     setReviewer('')
     setReviewNote('')
@@ -160,11 +195,13 @@ export default function ShiftSummaryPage() {
       alert('请填写复核人')
       return
     }
-    reviewTransaction(reviewTxId, reviewStatus, reviewer, reviewNote)
+    reviewTransaction(reviewTxId, reviewStatus, reviewer, reviewNote, reviewResult)
     setShowReview(false)
     setReviewTxId(null)
     setReviewer('')
     setReviewNote('')
+    setReviewResult('approved')
+    setFollowSuggestion(undefined)
   }
 
   const shiftLabel =
@@ -199,6 +236,16 @@ export default function ShiftSummaryPage() {
     return (
       <span className={`tag ${cfg.bg} ${cfg.text}`} style={{ fontSize: 11 }}>
         {reviewStatusLabels[status]}
+      </span>
+    )
+  }
+
+  const getReviewResultTag = (result?: ReviewResult) => {
+    if (!result) return null
+    const cfg = reviewResultTags[result]
+    return (
+      <span className={`tag ${cfg.bg} ${cfg.text}`} style={{ fontSize: 11 }}>
+        {reviewResultLabels[result]}
       </span>
     )
   }
@@ -333,7 +380,7 @@ export default function ShiftSummaryPage() {
 
         <div style={{
           display: 'grid',
-          gridTemplateColumns: '1fr 1fr 1fr 1fr',
+          gridTemplateColumns: '1fr 1fr 1fr 1fr 1fr',
           gap: 12,
           padding: 14,
           background: '#f9fafb',
@@ -381,13 +428,25 @@ export default function ShiftSummaryPage() {
             </select>
           </div>
           <div className="form-group" style={{ marginBottom: 0 }}>
-            <label className="form-label">按异常类型</label>
+            <label className="form-label">按异常/复核</label>
             <select
               className="form-select"
               value={filterAbnormalType}
               onChange={(e) => setFilterAbnormalType(e.target.value)}
             >
               {abnormalTypeOptions.map((opt) => (
+                <option key={opt.value} value={opt.value}>{opt.label}</option>
+              ))}
+            </select>
+          </div>
+          <div className="form-group" style={{ marginBottom: 0 }}>
+            <label className="form-label">按处理结果</label>
+            <select
+              className="form-select"
+              value={filterReviewResult}
+              onChange={(e) => setFilterReviewResult(e.target.value)}
+            >
+              {reviewResultOptions.map((opt) => (
                 <option key={opt.value} value={opt.value}>{opt.label}</option>
               ))}
             </select>
@@ -410,6 +469,7 @@ export default function ShiftSummaryPage() {
                 <th>支付方式</th>
                 <th>状态</th>
                 <th>复核状态</th>
+                <th>处理结果</th>
                 <th>风险/异常</th>
                 <th>时间</th>
                 <th>操作</th>
@@ -422,6 +482,7 @@ export default function ShiftSummaryPage() {
                   style={{
                     opacity: tx.status === 'cancelled' ? 0.55 : 1,
                     cursor: 'pointer',
+                    background: highlightTxId === tx.id ? '#fffbeb' : undefined,
                   }}
                   onClick={() => handleShowDetail(tx.id)}
                 >
@@ -450,6 +511,7 @@ export default function ShiftSummaryPage() {
                     {tx.status === 'voided' && '已作废'}
                   </td>
                   <td>{getReviewStatusTag(tx.reviewStatus)}</td>
+                  <td>{getReviewResultTag(tx.reviewResult) || <span className="text-gray" style={{ fontSize: 12 }}>未处理</span>}</td>
                   <td>
                     {tx.riskLevel && tx.riskLevel !== 'low' && getRiskBadge(tx.riskLevel)}
                     {tx.discountDetail && tx.discountDetail.discountAmount > 0 && (
@@ -616,7 +678,7 @@ export default function ShiftSummaryPage() {
           alignItems: 'center', justifyContent: 'center', zIndex: 1000,
         }}>
           <div style={{
-            background: 'white', borderRadius: 16, padding: 28, width: 420,
+            background: 'white', borderRadius: 16, padding: 28, width: 460,
             boxShadow: '0 20px 60px rgba(0,0,0,0.2)',
           }}>
             <div style={{ fontSize: 40, textAlign: 'center', marginBottom: 12 }}>🔍</div>
@@ -635,6 +697,48 @@ export default function ShiftSummaryPage() {
                 <option value="escalated">需上报</option>
               </select>
             </div>
+            <div className="form-group">
+              <label className="form-label">处理结果</label>
+              <select
+                className="form-select"
+                value={reviewResult}
+                onChange={(e) => setReviewResult(e.target.value as ReviewResult)}
+              >
+                <option value="approved">同意通过</option>
+                <option value="escalated">上报处理</option>
+                <option value="rejected">驳回申请</option>
+                <option value="adjusted">已调账</option>
+                <option value="refunded">已退款</option>
+              </select>
+            </div>
+            {(() => {
+              const tx = transactions.find((t) => t.id === reviewTxId)
+              if (tx?.riskSuggestions && tx.riskSuggestions.length > 0) {
+                return (
+                  <div className="form-group">
+                    <label className="form-label">是否按系统建议处理</label>
+                    <div style={{
+                      padding: 12, background: '#fef2f2', borderRadius: 8,
+                      border: '1px solid #fecaca', marginBottom: 10, fontSize: 12,
+                    }}>
+                      <div className="text-bold text-red-800" style={{ marginBottom: 4 }}>系统处理建议：</div>
+                      <ul style={{ margin: 0, paddingLeft: 16, color: '#7f1d1d', lineHeight: 1.7 }}>
+                        {tx.riskSuggestions.map((s, i) => <li key={i}>{s}</li>)}
+                      </ul>
+                    </div>
+                    <label className="form-label" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <input
+                        type="checkbox"
+                        checked={followSuggestion === true}
+                        onChange={(e) => setFollowSuggestion(e.target.checked ? true : false)}
+                      />
+                      收银员已按系统建议处理
+                    </label>
+                  </div>
+                )
+              }
+              return null
+            })()}
             <div className="form-group">
               <label className="form-label">复核人（必填）</label>
               <input
@@ -657,7 +761,14 @@ export default function ShiftSummaryPage() {
               />
             </div>
             <div style={{ display: 'flex', gap: 10, marginTop: 16 }}>
-              <button className="btn btn-secondary" style={{ flex: 1 }} onClick={() => { setShowReview(false); setReviewTxId(null); setReviewer(''); setReviewNote('') }}>返回</button>
+              <button className="btn btn-secondary" style={{ flex: 1 }} onClick={() => {
+                setShowReview(false)
+                setReviewTxId(null)
+                setReviewer('')
+                setReviewNote('')
+                setReviewResult('approved')
+                setFollowSuggestion(undefined)
+              }}>返回</button>
               <button className="btn btn-primary" style={{ flex: 1 }} onClick={doReview}>确认复核</button>
             </div>
           </div>
@@ -806,19 +917,77 @@ export default function ShiftSummaryPage() {
                     </div>
                   )}
 
-                  <div className="summary-row"><span>本金扣款</span><span className="text-bold">{formatCurrency(detailTransaction.principalUsed || 0)}</span></div>
-                  <div className="summary-row"><span>赠金抵扣</span><span className="text-green text-bold">{formatCurrency(detailTransaction.giftUsed || 0)}</span></div>
-                  {detailTransaction.makeUpAmount && detailTransaction.makeUpAmount > 0 && (
-                    <div className="summary-row">
-                      <span>
-                        补差价（{paymentMethodLabels[detailTransaction.makeUpMethod || 'cash']}）
-                        <span style={{ fontSize: 11, color: '#6b7280', marginLeft: 6 }}>
-                          补缴已合并入本笔交易，仅一笔入账
-                        </span>
-                      </span>
-                      <span className="text-bold">{formatCurrency(detailTransaction.makeUpAmount)}</span>
+                  {detailTransaction.makeUpAmount && detailTransaction.makeUpAmount > 0 ? (
+                    <div>
+                      <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 8, color: '#9d174d' }}>
+                        📊 资金来源拆分
+                      </div>
+                      <div style={{
+                        display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8,
+                        padding: 12, background: 'white', borderRadius: 8,
+                        border: '1px solid #fbcfe8', marginBottom: 12,
+                      }}>
+                        <div style={{
+                          padding: 8, background: '#fff1f2', borderRadius: 6,
+                          border: '1px solid #fecdd3',
+                        }}>
+                          <div style={{ fontSize: 11, color: '#9ca3af', marginBottom: 2 }}>
+                            补缴来源：{paymentMethodLabels[detailTransaction.makeUpMethod || 'cash']}
+                          </div>
+                          <div className="text-green text-bold" style={{ fontSize: 16 }}>
+                            +{formatCurrency(detailTransaction.makeUpAmount)}
+                          </div>
+                        </div>
+                        <div style={{
+                          padding: 8, background: '#fff7ed', borderRadius: 6,
+                          border: '1px solid #fed7aa',
+                        }}>
+                          <div style={{ fontSize: 11, color: '#9ca3af', marginBottom: 2 }}>
+                            储值账户消耗
+                          </div>
+                          <div className="text-red text-bold" style={{ fontSize: 16 }}>
+                            -{formatCurrency(detailTransaction.amount - detailTransaction.makeUpAmount)}
+                          </div>
+                        </div>
+                      </div>
+                      <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 8, color: '#9d174d' }}>
+                        💰 储值消耗拆分
+                      </div>
+                      <div className="summary-row">
+                        <span>补缴金额（{paymentMethodLabels[detailTransaction.makeUpMethod || 'cash']}）</span>
+                        <span className="text-green text-bold">+{formatCurrency(detailTransaction.makeUpAmount)}</span>
+                      </div>
+                      <div className="summary-row">
+                        <span>扣原卡本金</span>
+                        <span className="text-red text-bold">-{formatCurrency(detailTransaction.principalUsed || 0)}</span>
+                      </div>
+                      <div className="summary-row">
+                        <span>赠金抵扣</span>
+                        <span className="text-orange text-bold">-{formatCurrency(detailTransaction.giftUsed || 0)}</span>
+                      </div>
+                      <div style={{
+                        fontSize: 11, color: '#6b7280',
+                        padding: '8px 12px', background: '#f9fafb',
+                        borderRadius: 6, marginTop: 8, marginBottom: 12,
+                      }}>
+                        对账公式：补缴 {formatCurrency(detailTransaction.makeUpAmount)} + 本金 {formatCurrency(detailTransaction.principalUsed || 0)} + 赠金 {formatCurrency(detailTransaction.giftUsed || 0)} = 交易金额 {formatCurrency(detailTransaction.amount)} ✓
+                        <span style={{ marginLeft: 8 }}>（补缴已合并入本笔交易，仅一笔入账）</span>
+                      </div>
+                    </div>
+                  ) : (
+                    <div>
+                      <div className="summary-row"><span>本金扣款</span><span className="text-bold">{formatCurrency(detailTransaction.principalUsed || 0)}</span></div>
+                      <div className="summary-row"><span>赠金抵扣</span><span className="text-green text-bold">{formatCurrency(detailTransaction.giftUsed || 0)}</span></div>
+                      <div style={{
+                        fontSize: 11, color: '#6b7280',
+                        padding: '8px 12px', background: '#f9fafb',
+                        borderRadius: 6, marginTop: 8, marginBottom: 12,
+                      }}>
+                        对账公式：本金 {formatCurrency(detailTransaction.principalUsed || 0)} + 赠金 {formatCurrency(detailTransaction.giftUsed || 0)} = 交易金额 {formatCurrency(detailTransaction.amount)} ✓
+                      </div>
                     </div>
                   )}
+
                   <div className="summary-row total" style={{ marginTop: 8 }}>
                     <span>实际扣款总额</span>
                     <span className="amount text-pink">{formatCurrency(detailTransaction.amount)}</span>
@@ -934,6 +1103,20 @@ export default function ShiftSummaryPage() {
                   <span>复核状态</span>
                   <span>{getReviewStatusTag(detailTransaction.reviewStatus)}</span>
                 </div>
+                {detailTransaction.reviewResult && (
+                  <div className="summary-row">
+                    <span>处理结果</span>
+                    <span>{getReviewResultTag(detailTransaction.reviewResult)}</span>
+                  </div>
+                )}
+                {detailTransaction.followSuggestion !== undefined && (
+                  <div className="summary-row">
+                    <span>是否按建议处理</span>
+                    <span className={detailTransaction.followSuggestion ? 'text-green text-bold' : 'text-red text-bold'}>
+                      {detailTransaction.followSuggestion ? '✓ 已按建议处理' : '✗ 未按建议处理'}
+                    </span>
+                  </div>
+                )}
                 {detailTransaction.reviewer && (
                   <div className="summary-row">
                     <span>复核人</span>
@@ -975,6 +1158,22 @@ export default function ShiftSummaryPage() {
                       <ul style={{ margin: 0, paddingLeft: 18, lineHeight: 1.8 }}>
                         {detailTransaction.riskDetails.map((d, idx) => (
                           <li key={idx}>{d}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                  {detailTransaction.riskSuggestions && detailTransaction.riskSuggestions.length > 0 && (
+                    <div style={{
+                      marginTop: 12, padding: 12,
+                      background: '#fff7ed', borderRadius: 8,
+                      border: '1px solid #fed7aa',
+                    }}>
+                      <div style={{ fontWeight: 600, fontSize: 13, color: '#92400e', marginBottom: 6 }}>
+                        💡 系统处理建议（提交时已给出）：
+                      </div>
+                      <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12, color: '#78350f', lineHeight: 1.8 }}>
+                        {detailTransaction.riskSuggestions.map((s, idx) => (
+                          <li key={idx}>{s}</li>
                         ))}
                       </ul>
                     </div>
