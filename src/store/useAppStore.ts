@@ -83,7 +83,7 @@ interface AppState {
   closeShift: () => ShiftSummary
   addAbnormalAlert: (alert: Omit<AbnormalAlert, 'id' | 'timestamp'>) => void
   clearAbnormalAlerts: () => void
-  reviewTransaction: (transactionId: string, status: ReviewStatus, reviewer: string, note: string, result?: ReviewResult) => void
+  reviewTransaction: (transactionId: string, status: ReviewStatus, reviewer: string, note: string, result?: ReviewResult, followSuggestion?: boolean) => void
 }
 
 const generateId = () => Math.random().toString(36).substring(2, 12)
@@ -476,7 +476,7 @@ export const useAppStore = create<AppState>()(
 
       clearAbnormalAlerts: () => set({ abnormalAlerts: [] }),
 
-      reviewTransaction: (transactionId, status, reviewer, note, result) => {
+      reviewTransaction: (transactionId, status, reviewer, note, result, followSuggestion) => {
         set((state) => {
           const tx = state.transactions.find((t) => t.id === transactionId)
           if (!tx) return state
@@ -487,6 +487,7 @@ export const useAppStore = create<AppState>()(
             reviewNote: note || undefined,
             reviewedAt: nowStr(),
             reviewResult: result || undefined,
+            followSuggestion: followSuggestion !== undefined ? followSuggestion : tx.followSuggestion,
             updatedAt: nowStr(),
           }
           return {

@@ -43,6 +43,7 @@ export default function ShiftSummaryPage() {
   const [filterAbnormalType, setFilterAbnormalType] = useState('')
   const [filterTxType, setFilterTxType] = useState<string>('')
   const [filterReviewResult, setFilterReviewResult] = useState<string>('')
+  const [filterFollowSuggestion, setFilterFollowSuggestion] = useState<string>('')
 
   const [showReview, setShowReview] = useState(false)
   const [reviewTxId, setReviewTxId] = useState<string | null>(null)
@@ -53,6 +54,9 @@ export default function ShiftSummaryPage() {
   const [followSuggestion, setFollowSuggestion] = useState<boolean | undefined>(undefined)
 
   const [highlightTxId, setHighlightTxId] = useState<string | null>(null)
+
+  const [viewTab, setViewTab] = useState<'txs' | 'reconcile'>('txs')
+  const [expandedReconcileKey, setExpandedReconcileKey] = useState<string | null>(null)
 
   useEffect(() => {
     const state = location.state as { highlightTxId?: string } | null
@@ -77,6 +81,75 @@ export default function ShiftSummaryPage() {
 
   const abnormalTxs = useMemo(() => {
     return shiftTxs.filter((t) => t.warningFlags && t.warningFlags.length > 0)
+  }, [shiftTxs])
+
+  const reconcileData = useMemo(() => {
+    const completedTxs = shiftTxs.filter((t) => t.status !== 'cancelled' && t.status !== 'voided')
+    const paymentMethodTotals: Record<string, { amount: number; txs: Transaction[] }> = {}
+    let storedPrincipalTotal = 0
+    let storedGiftTotal = 0
+    let storedPrincipalTxs: Transaction[] = []
+    let storedGiftTxs: Transaction[] = []
+    let makeUpTotal = 0
+    let makeUpTxs: Transaction[] = []
+    const makeUpByMethod: Record<string, { amount: number; txs: Transaction[] }> = {}
+
+    for (const tx of completedTxs) {
+      if (tx.type === 'recharge') {
+        const method = tx.paymentMethod
+        if (!paymentMethodTotals[method]) paymentMethodTotals[method] = { amount: 0, txs: [] }
+        paymentMethodTotals[method].amount += tx.amount
+        paymentMethodTotals[method].txs.push(tx)
+      } else if (tx.type === 'deduct') {
+        const makeUp = tx.makeUpAmount || 0
+        const principalUsed = tx.principalUsed || 0
+        const giftUsed = tx.giftUsed || 0
+        const storedUsed = tx.amount - makeUp
+
+        if (makeUp > 0) {
+          const mMethod = tx.makeUpMethod || 'cash'
+          makeUpTotal += makeUp
+          makeUpTxs.push(tx)
+          if (!makeUpByMethod[mMethod]) makeUpByMethod[mMethod] = { amount: 0, txs: [] }
+          makeUpByMethod[mMethod].amount += makeUp
+          makeUpByMethod[mMethod].txs.push(tx)
+          if (!paymentMethodTotals[mMethod]) paymentMethodTotals[mMethod] = { amount: 0, txs: [] }
+          paymentMethodTotals[mMethod].amount += makeUp
+          paymentMethodTotals[mMethod].txs.push(tx)
+        }
+
+        if (principalUsed > 0) {
+          storedPrincipalTotal += principalUsed
+          storedPrincipalTxs.push(tx)
+        }
+        if (giftUsed > 0) {
+          storedGiftTotal += giftUsed
+          storedGiftTxs.push(tx)
+        }
+      } else if (tx.type === 'refund' || tx.type === 'adjust') {
+        const method = tx.paymentMethod
+        if (!paymentMethodTotals[method]) paymentMethodTotals[method] = { amount: 0, txs: [] }
+        paymentMethodTotals[method].amount += tx.type === 'refund' ? -tx.amount : tx.amount
+        paymentMethodTotals[method].txs.push(tx)
+      }
+    }
+
+    const grandCashTotal = Object.values(paymentMethodTotals).reduce((s, v) => s + v.amount, 0)
+    const grandAllTotal = grandCashTotal + storedPrincipalTotal + storedGiftTotal
+
+    return {
+      paymentMethodTotals,
+      storedPrincipalTotal,
+      storedPrincipalTxs,
+      storedGiftTotal,
+      storedGiftTxs,
+      makeUpTotal,
+      makeUpTxs,
+      makeUpByMethod,
+      grandCashTotal,
+      grandAllTotal,
+      completedTxs,
+    }
   }, [shiftTxs])
 
   const filteredTxs = useMemo(() => {
@@ -115,8 +188,18 @@ export default function ShiftSummaryPage() {
       result = result.filter((t) => t.reviewResult === filterReviewResult)
     }
 
+    if (filterFollowSuggestion) {
+      if (filterFollowSuggestion === 'has_suggestion') {
+        result = result.filter((t) => t.riskSuggestions && t.riskSuggestions.length > 0)
+      } else if (filterFollowSuggestion === 'followed') {
+        result = result.filter((t) => t.followSuggestion === true)
+      } else if (filterFollowSuggestion === 'not_followed') {
+        result = result.filter((t) => t.followSuggestion === false)
+      }
+    }
+
     return result
-  }, [shiftTxs, filterMember, filterPayMethod, filterAbnormalType, filterTxType, filterReviewResult])
+  }, [shiftTxs, filterMember, filterPayMethod, filterAbnormalType, filterTxType, filterReviewResult, filterFollowSuggestion])
 
   const detailTransaction = useMemo(() => {
     if (!detailTxId) return null
@@ -143,6 +226,13 @@ export default function ShiftSummaryPage() {
     { value: 'rejected', label: '驳回申请' },
     { value: 'adjusted', label: '已调账' },
     { value: 'refunded', label: '已退款' },
+  ]
+
+  const followSuggestionOptions = [
+    { value: '', label: '全部建议处理' },
+    { value: 'has_suggestion', label: '有处理建议' },
+    { value: 'followed', label: '已按建议处理' },
+    { value: 'not_followed', label: '未按建议处理' },
   ]
 
   const handlePrint = (txId: string) => {
@@ -195,7 +285,7 @@ export default function ShiftSummaryPage() {
       alert('请填写复核人')
       return
     }
-    reviewTransaction(reviewTxId, reviewStatus, reviewer, reviewNote, reviewResult)
+    reviewTransaction(reviewTxId, reviewStatus, reviewer, reviewNote, reviewResult, followSuggestion)
     setShowReview(false)
     setReviewTxId(null)
     setReviewer('')
@@ -370,17 +460,59 @@ export default function ShiftSummaryPage() {
 
       <div className="section">
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
-          <h3 className="section-title" style={{ marginBottom: 0 }}>
-            交易明细台账
-            <span className="text-gray" style={{ fontWeight: 400, fontSize: 13, marginLeft: 8 }}>
-              共 {filteredTxs.length} 笔
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <div style={{ display: 'flex', background: '#f3f4f6', borderRadius: 10, padding: 4 }}>
+              <button
+                onClick={() => setViewTab('txs')}
+                style={{
+                  padding: '8px 18px',
+                  borderRadius: 7,
+                  border: 'none',
+                  cursor: 'pointer',
+                  fontWeight: viewTab === 'txs' ? 600 : 400,
+                  background: viewTab === 'txs' ? 'white' : 'transparent',
+                  color: viewTab === 'txs' ? '#111827' : '#6b7280',
+                  fontSize: 13,
+                  boxShadow: viewTab === 'txs' ? '0 1px 3px rgba(0,0,0,0.1)' : 'none',
+                }}
+              >
+                📋 交易明细
+              </button>
+              <button
+                onClick={() => setViewTab('reconcile')}
+                style={{
+                  padding: '8px 18px',
+                  borderRadius: 7,
+                  border: 'none',
+                  cursor: 'pointer',
+                  fontWeight: viewTab === 'reconcile' ? 600 : 400,
+                  background: viewTab === 'reconcile' ? 'white' : 'transparent',
+                  color: viewTab === 'reconcile' ? '#111827' : '#6b7280',
+                  fontSize: 13,
+                  boxShadow: viewTab === 'reconcile' ? '0 1px 3px rgba(0,0,0,0.1)' : 'none',
+                }}
+              >
+                📊 对账汇总
+              </button>
+            </div>
+            <span className="text-gray" style={{ fontSize: 12 }}>
+              共 {shiftTxs.length} 笔交易
             </span>
-          </h3>
+          </div>
         </div>
+
+        {viewTab === 'txs' && (
+          <>
+            <h3 className="section-title" style={{ marginBottom: 12 }}>
+              交易明细台账
+              <span className="text-gray" style={{ fontWeight: 400, fontSize: 13, marginLeft: 8 }}>
+                共 {filteredTxs.length} 笔
+              </span>
+            </h3>
 
         <div style={{
           display: 'grid',
-          gridTemplateColumns: '1fr 1fr 1fr 1fr 1fr',
+          gridTemplateColumns: 'repeat(6, 1fr)',
           gap: 12,
           padding: 14,
           background: '#f9fafb',
@@ -451,6 +583,18 @@ export default function ShiftSummaryPage() {
               ))}
             </select>
           </div>
+          <div className="form-group" style={{ marginBottom: 0 }}>
+            <label className="form-label">按建议处理</label>
+            <select
+              className="form-select"
+              value={filterFollowSuggestion}
+              onChange={(e) => setFilterFollowSuggestion(e.target.value)}
+            >
+              {followSuggestionOptions.map((opt) => (
+                <option key={opt.value} value={opt.value}>{opt.label}</option>
+              ))}
+            </select>
+          </div>
         </div>
 
         {filteredTxs.length === 0 ? (
@@ -470,6 +614,7 @@ export default function ShiftSummaryPage() {
                 <th>状态</th>
                 <th>复核状态</th>
                 <th>处理结果</th>
+                <th>建议处理</th>
                 <th>风险/异常</th>
                 <th>时间</th>
                 <th>操作</th>
@@ -512,6 +657,19 @@ export default function ShiftSummaryPage() {
                   </td>
                   <td>{getReviewStatusTag(tx.reviewStatus)}</td>
                   <td>{getReviewResultTag(tx.reviewResult) || <span className="text-gray" style={{ fontSize: 12 }}>未处理</span>}</td>
+                  <td>
+                    {tx.riskSuggestions && tx.riskSuggestions.length > 0 ? (
+                      tx.followSuggestion === true ? (
+                        <span className="tag tag-success" style={{ fontSize: 11 }}>✓ 已按建议</span>
+                      ) : tx.followSuggestion === false ? (
+                        <span className="tag tag-danger" style={{ fontSize: 11 }}>✗ 未按建议</span>
+                      ) : (
+                        <span className="tag tag-warning" style={{ fontSize: 11 }}>待确认</span>
+                      )
+                    ) : (
+                      <span className="text-gray" style={{ fontSize: 12 }}>无建议</span>
+                    )}
+                  </td>
                   <td>
                     {tx.riskLevel && tx.riskLevel !== 'low' && getRiskBadge(tx.riskLevel)}
                     {tx.discountDetail && tx.discountDetail.discountAmount > 0 && (
@@ -576,6 +734,377 @@ export default function ShiftSummaryPage() {
               ))}
             </tbody>
           </table>
+        )}
+          </>
+        )}
+
+        {viewTab === 'reconcile' && (
+          <>
+            <h3 className="section-title" style={{ marginBottom: 12 }}>
+              对账汇总
+              <span className="text-gray" style={{ fontWeight: 400, fontSize: 13, marginLeft: 8 }}>
+                共 {reconcileData.completedTxs.length} 笔有效交易
+              </span>
+            </h3>
+
+            <div style={{
+              display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 14, marginBottom: 18,
+            }}>
+              <div style={{
+                padding: 16, background: '#f0fdf4', borderRadius: 12,
+                border: '1px solid #bbf7d0',
+              }}>
+                <div className="text-gray" style={{ fontSize: 12, marginBottom: 4 }}>现金/扫码/刷卡合计</div>
+                <div className="text-green text-bold" style={{ fontSize: 22 }}>
+                  {formatCurrency(reconcileData.grandCashTotal)}
+                </div>
+                <div className="text-gray" style={{ fontSize: 11, marginTop: 4 }}>含储值充值和补缴</div>
+              </div>
+              <div style={{
+                padding: 16, background: '#eff6ff', borderRadius: 12,
+                border: '1px solid #bfdbfe',
+              }}>
+                <div className="text-gray" style={{ fontSize: 12, marginBottom: 4 }}>储值本金消耗</div>
+                <div className="text-bold" style={{ fontSize: 22, color: '#2563eb' }}>
+                  {formatCurrency(reconcileData.storedPrincipalTotal)}
+                </div>
+                <div className="text-gray" style={{ fontSize: 11, marginTop: 4 }}>
+                  {reconcileData.storedPrincipalTxs.length} 笔扣款
+                </div>
+              </div>
+              <div style={{
+                padding: 16, background: '#fff7ed', borderRadius: 12,
+                border: '1px solid #fed7aa',
+              }}>
+                <div className="text-gray" style={{ fontSize: 12, marginBottom: 4 }}>赠金抵扣</div>
+                <div className="text-bold" style={{ fontSize: 22, color: '#ea580c' }}>
+                  {formatCurrency(reconcileData.storedGiftTotal)}
+                </div>
+                <div className="text-gray" style={{ fontSize: 11, marginTop: 4 }}>
+                  {reconcileData.storedGiftTxs.length} 笔赠金
+                </div>
+              </div>
+              <div style={{
+                padding: 16, background: '#fdf2f8', borderRadius: 12,
+                border: '1px solid #f9a8d4',
+              }}>
+                <div className="text-gray" style={{ fontSize: 12, marginBottom: 4 }}>资金流水总计</div>
+                <div className="text-pink text-bold" style={{ fontSize: 22 }}>
+                  {formatCurrency(reconcileData.grandAllTotal)}
+                </div>
+                <div className="text-gray" style={{ fontSize: 11, marginTop: 4 }}>
+                  现金 + 本金 + 赠金
+                </div>
+              </div>
+            </div>
+
+            <div style={{
+              display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14,
+            }}>
+              <div style={{
+                border: '1px solid #e5e7eb', borderRadius: 12, overflow: 'hidden',
+              }}>
+                <div style={{
+                  padding: '12px 16px', background: '#f9fafb', borderBottom: '1px solid #e5e7eb',
+                  fontWeight: 600, fontSize: 14,
+                }}>
+                  💰 按支付方式汇总（含储值充值+补缴+退款+调账）
+                </div>
+                {Object.entries(reconcileData.paymentMethodTotals).length === 0 ? (
+                  <div className="empty-state" style={{ padding: 24 }}>
+                    <div className="empty-text">暂无支付数据</div>
+                  </div>
+                ) : (
+                  Object.entries(reconcileData.paymentMethodTotals).map(([method, data]) => {
+                    const key = `pay-${method}`
+                    const expanded = expandedReconcileKey === key
+                    return (
+                      <div key={key} style={{ borderBottom: '1px solid #f3f4f6' }}>
+                        <div
+                          style={{
+                            padding: '12px 16px',
+                            display: 'flex', justifyContent: 'space-between',
+                            alignItems: 'center', cursor: 'pointer',
+                            background: expanded ? '#f9fafb' : 'white',
+                          }}
+                          onClick={() => setExpandedReconcileKey(expanded ? null : key)}
+                        >
+                          <span style={{ fontWeight: 500 }}>
+                            {expanded ? '▼' : '▶'} {paymentMethodLabels[method] || method}
+                            <span className="text-gray" style={{ fontSize: 12, marginLeft: 8 }}>
+                              {data.txs.length} 笔
+                            </span>
+                          </span>
+                          <span className="text-bold" style={{
+                            color: data.amount >= 0 ? '#16a34a' : '#dc2626', fontSize: 16,
+                          }}>
+                            {data.amount >= 0 ? '+' : ''}{formatCurrency(data.amount)}
+                          </span>
+                        </div>
+                        {expanded && (
+                          <table className="table" style={{ fontSize: 12 }}>
+                            <thead>
+                              <tr>
+                                <th>交易单号</th>
+                                <th>类型</th>
+                                <th>会员</th>
+                                <th style={{ textAlign: 'right' }}>金额</th>
+                                <th>时间</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {data.txs.map((t) => (
+                                <tr
+                                  key={t.id}
+                                  style={{ cursor: 'pointer' }}
+                                  onClick={() => {
+                                    handleShowDetail(t.id)
+                                    setHighlightTxId(t.id)
+                                  }}
+                                >
+                                  <td className="font-mono">{t.transactionNo}</td>
+                                  <td>{transactionTypeLabels[t.type]}</td>
+                                  <td>{t.memberName}</td>
+                                  <td style={{ textAlign: 'right' }}>
+                                    <span className={t.type === 'refund' ? 'text-red' : 'text-green'}>
+                                      {t.type === 'refund' ? '-' : '+'}{formatCurrency(t.amount)}
+                                    </span>
+                                  </td>
+                                  <td className="text-gray">{t.createdAt.slice(5)}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        )}
+                      </div>
+                    )
+                  })
+                )}
+              </div>
+
+              <div style={{
+                border: '1px solid #e5e7eb', borderRadius: 12, overflow: 'hidden',
+              }}>
+                <div style={{
+                  padding: '12px 16px', background: '#f9fafb', borderBottom: '1px solid #e5e7eb',
+                  fontWeight: 600, fontSize: 14,
+                }}>
+                  📊 储值消耗明细
+                </div>
+
+                <div style={{ borderBottom: '1px solid #f3f4f6' }}>
+                  {(() => {
+                    const key = 'stored-principal'
+                    const expanded = expandedReconcileKey === key
+                    return (
+                      <>
+                        <div
+                          style={{
+                            padding: '12px 16px',
+                            display: 'flex', justifyContent: 'space-between',
+                            alignItems: 'center', cursor: 'pointer',
+                            background: expanded ? '#eff6ff20' : 'white',
+                          }}
+                          onClick={() => setExpandedReconcileKey(expanded ? null : key)}
+                        >
+                          <span style={{ fontWeight: 500, color: '#2563eb' }}>
+                            {expanded ? '▼' : '▶'} 储值本金消耗
+                            <span className="text-gray" style={{ fontSize: 12, marginLeft: 8 }}>
+                              {reconcileData.storedPrincipalTxs.length} 笔
+                            </span>
+                          </span>
+                          <span className="text-bold" style={{ color: '#2563eb', fontSize: 16 }}>
+                            -{formatCurrency(reconcileData.storedPrincipalTotal)}
+                          </span>
+                        </div>
+                        {expanded && reconcileData.storedPrincipalTxs.length > 0 && (
+                          <table className="table" style={{ fontSize: 12 }}>
+                            <thead>
+                              <tr>
+                                <th>交易单号</th>
+                                <th>会员</th>
+                                <th style={{ textAlign: 'right' }}>本金扣</th>
+                                <th style={{ textAlign: 'right' }}>赠金抵</th>
+                                <th style={{ textAlign: 'right' }}>合计</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {reconcileData.storedPrincipalTxs.map((t) => (
+                                <tr
+                                  key={t.id}
+                                  style={{ cursor: 'pointer' }}
+                                  onClick={() => {
+                                    handleShowDetail(t.id)
+                                    setHighlightTxId(t.id)
+                                  }}
+                                >
+                                  <td className="font-mono">{t.transactionNo}</td>
+                                  <td>{t.memberName}</td>
+                                  <td style={{ textAlign: 'right' }} className="text-bold">
+                                    {formatCurrency(t.principalUsed || 0)}
+                                  </td>
+                                  <td style={{ textAlign: 'right' }} className="text-orange">
+                                    {formatCurrency(t.giftUsed || 0)}
+                                  </td>
+                                  <td style={{ textAlign: 'right' }} className="text-pink text-bold">
+                                    {formatCurrency(t.amount)}
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        )}
+                      </>
+                    )
+                  })()}
+                </div>
+
+                <div style={{ borderBottom: '1px solid #f3f4f6' }}>
+                  {(() => {
+                    const key = 'stored-gift'
+                    const expanded = expandedReconcileKey === key
+                    return (
+                      <>
+                        <div
+                          style={{
+                            padding: '12px 16px',
+                            display: 'flex', justifyContent: 'space-between',
+                            alignItems: 'center', cursor: 'pointer',
+                            background: expanded ? '#fff7ed20' : 'white',
+                          }}
+                          onClick={() => setExpandedReconcileKey(expanded ? null : key)}
+                        >
+                          <span style={{ fontWeight: 500, color: '#ea580c' }}>
+                            {expanded ? '▼' : '▶'} 赠金抵扣
+                            <span className="text-gray" style={{ fontSize: 12, marginLeft: 8 }}>
+                              {reconcileData.storedGiftTxs.length} 笔
+                            </span>
+                          </span>
+                          <span className="text-bold" style={{ color: '#ea580c', fontSize: 16 }}>
+                            -{formatCurrency(reconcileData.storedGiftTotal)}
+                          </span>
+                        </div>
+                        {expanded && reconcileData.storedGiftTxs.length > 0 && (
+                          <table className="table" style={{ fontSize: 12 }}>
+                            <thead>
+                              <tr>
+                                <th>交易单号</th>
+                                <th>会员</th>
+                                <th style={{ textAlign: 'right' }}>本金扣</th>
+                                <th style={{ textAlign: 'right' }}>赠金抵</th>
+                                <th style={{ textAlign: 'right' }}>合计</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {reconcileData.storedGiftTxs.map((t) => (
+                                <tr
+                                  key={t.id}
+                                  style={{ cursor: 'pointer' }}
+                                  onClick={() => {
+                                    handleShowDetail(t.id)
+                                    setHighlightTxId(t.id)
+                                  }}
+                                >
+                                  <td className="font-mono">{t.transactionNo}</td>
+                                  <td>{t.memberName}</td>
+                                  <td style={{ textAlign: 'right' }} className="text-bold">
+                                    {formatCurrency(t.principalUsed || 0)}
+                                  </td>
+                                  <td style={{ textAlign: 'right' }} className="text-orange">
+                                    {formatCurrency(t.giftUsed || 0)}
+                                  </td>
+                                  <td style={{ textAlign: 'right' }} className="text-pink text-bold">
+                                    {formatCurrency(t.amount)}
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        )}
+                      </>
+                    )
+                  })()}
+                </div>
+
+                {reconcileData.makeUpTotal > 0 && (
+                  <div style={{ borderBottom: '1px solid #f3f4f6' }}>
+                    {(() => {
+                      const key = 'makeup'
+                      const expanded = expandedReconcileKey === key
+                      return (
+                        <>
+                          <div
+                            style={{
+                              padding: '12px 16px',
+                              display: 'flex', justifyContent: 'space-between',
+                              alignItems: 'center', cursor: 'pointer',
+                              background: expanded ? '#fdf2f820' : 'white',
+                            }}
+                            onClick={() => setExpandedReconcileKey(expanded ? null : key)}
+                          >
+                            <span style={{ fontWeight: 500, color: '#db2777' }}>
+                              {expanded ? '▼' : '▶'} 补缴入账合计
+                              <span className="text-gray" style={{ fontSize: 12, marginLeft: 8 }}>
+                                {reconcileData.makeUpTxs.length} 笔
+                              </span>
+                            </span>
+                            <span className="text-bold" style={{ color: '#db2777', fontSize: 16 }}>
+                              +{formatCurrency(reconcileData.makeUpTotal)}
+                            </span>
+                          </div>
+                          {expanded && (
+                            <table className="table" style={{ fontSize: 12 }}>
+                              <thead>
+                                <tr>
+                                  <th>交易单号</th>
+                                  <th>会员</th>
+                                  <th>补缴方式</th>
+                                  <th style={{ textAlign: 'right' }}>补缴额</th>
+                                  <th style={{ textAlign: 'right' }}>成交总额</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {reconcileData.makeUpTxs.map((t) => (
+                                  <tr
+                                    key={t.id}
+                                    style={{ cursor: 'pointer' }}
+                                    onClick={() => {
+                                      handleShowDetail(t.id)
+                                      setHighlightTxId(t.id)
+                                    }}
+                                  >
+                                    <td className="font-mono">{t.transactionNo}</td>
+                                    <td>{t.memberName}</td>
+                                    <td>{paymentMethodLabels[t.makeUpMethod || 'cash']}</td>
+                                    <td style={{ textAlign: 'right' }} className="text-green text-bold">
+                                      +{formatCurrency(t.makeUpAmount || 0)}
+                                    </td>
+                                    <td style={{ textAlign: 'right' }} className="text-pink text-bold">
+                                      {formatCurrency(t.amount)}
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          )}
+                        </>
+                      )
+                    })()}
+                  </div>
+                )}
+
+                <div style={{
+                  padding: 12, background: '#f9fafb', fontSize: 12, color: '#6b7280',
+                  lineHeight: 1.8,
+                }}>
+                  <div className="text-bold" style={{ color: '#111827', marginBottom: 4 }}>💡 对账说明</div>
+                  <div>现金/扫码/刷卡合计 = 储值充值实收 + 补缴实收 - 退款 + 调账</div>
+                  <div>储值本金消耗 + 赠金抵扣 = 扣款成交金额 - 补缴金额</div>
+                  <div>所有行点击可展开对应交易列表，再点交易单行可查看完整详情</div>
+                </div>
+              </div>
+            </div>
+          </>
         )}
       </div>
 

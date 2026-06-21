@@ -409,6 +409,8 @@ export default function DeductConfirmPage() {
       makeUpMethod: needMakeUp ? makeUpMethod : undefined,
       riskLevel: discountCheck.riskLevel,
       riskDetails: discountCheck.warnings,
+      riskSuggestions: discountCheck.suggestions.length > 0 ? discountCheck.suggestions : undefined,
+      followSuggestion: discountCheck.suggestions.length > 0 ? false : undefined,
       warningFlags: hasDiscount
         ? ['手工调整金额', ...discountCheck.warnings]
         : undefined,

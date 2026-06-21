@@ -73,10 +73,11 @@ export default function MemberAccountFlowPage() {
       const giftUsed = tx.giftUsed || 0
       principalChange = makeUp - principalUsed
       giftChange = -giftUsed
+      const makeUpMethodLabel = tx.makeUpMethod ? paymentMethodLabels[tx.makeUpMethod] : '现金'
       if (makeUp > 0) {
-        description = `项目扣款 ${formatCurrency(tx.amount)}（补缴 ${formatCurrency(makeUp)} + 扣本金 ${formatCurrency(principalUsed)} + 赠金抵 ${formatCurrency(giftUsed)}）`
+        description = `成交 ${formatCurrency(tx.amount)} = ${makeUpMethodLabel}补差 ${formatCurrency(makeUp)} + 本金 ${formatCurrency(principalUsed)} + 赠金抵 ${formatCurrency(giftUsed)}`
       } else {
-        description = `项目扣款 ${formatCurrency(tx.amount)}（扣本金 ${formatCurrency(principalUsed)} + 赠金抵 ${formatCurrency(giftUsed)}）`
+        description = `成交 ${formatCurrency(tx.amount)} = 本金 ${formatCurrency(principalUsed)} + 赠金抵 ${formatCurrency(giftUsed)}`
       }
       if (tx.status === 'cancelled') {
         principalChange = -(makeUp - principalUsed)
