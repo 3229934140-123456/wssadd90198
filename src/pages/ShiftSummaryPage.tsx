@@ -1,6 +1,14 @@
 import { useMemo, useState } from 'react'
 import { useAppStore } from '../store/useAppStore'
-import { formatCurrency, paymentMethodLabels } from '../utils/rules'
+import {
+  formatCurrency,
+  paymentMethodLabels,
+  transactionTypeLabels,
+  riskLevelConfig,
+  maskPhone,
+  maskName,
+} from '../utils/rules'
+import type { Transaction, PaymentMethod, RiskLevel } from '../types'
 
 export default function ShiftSummaryPage() {
   const currentShift = useAppStore((s) => s.currentShift)
@@ -10,6 +18,7 @@ export default function ShiftSummaryPage() {
   const cancelTransaction = useAppStore((s) => s.cancelTransaction)
   const incrementReceiptPrint = useAppStore((s) => s.incrementReceiptPrint)
   const closeShift = useAppStore((s) => s.closeShift)
+  const members = useAppStore((s) => s.members)
 
   const [selectedTx, setSelectedTx] = useState<string | null>(null)
   const [cancelReason, setCancelReason] = useState('')
@@ -17,6 +26,14 @@ export default function ShiftSummaryPage() {
   const [showSignature, setShowSignature] = useState(false)
   const [signatureTxId, setSignatureTxId] = useState<string | null>(null)
   const [shiftClosed, setShiftClosed] = useState(false)
+
+  const [showDetailDrawer, setShowDetailDrawer] = useState(false)
+  const [detailTxId, setDetailTxId] = useState<string | null>(null)
+
+  const [filterMember, setFilterMember] = useState('')
+  const [filterPayMethod, setFilterPayMethod] = useState<PaymentMethod | ''>('')
+  const [filterAbnormalType, setFilterAbnormalType] = useState('')
+  const [filterTxType, setFilterTxType] = useState<string>('')
 
   const shiftTxs = useMemo(() => {
     const start = new Date(currentShift.startedAt)
@@ -33,6 +50,49 @@ export default function ShiftSummaryPage() {
     return shiftTxs.filter((t) => t.warningFlags && t.warningFlags.length > 0)
   }, [shiftTxs])
 
+  const filteredTxs = useMemo(() => {
+    let result = [...shiftTxs]
+
+    if (filterMember) {
+      result = result.filter((t) => t.memberId === filterMember)
+    }
+    if (filterPayMethod) {
+      result = result.filter((t) => t.paymentMethod === filterPayMethod)
+    }
+    if (filterTxType) {
+      result = result.filter((t) => t.type === filterTxType)
+    }
+    if (filterAbnormalType) {
+      if (filterAbnormalType === 'has_abnormal') {
+        result = result.filter((t) => t.warningFlags && t.warningFlags.length > 0)
+      } else if (filterAbnormalType === 'has_discount') {
+        result = result.filter((t) => t.discountDetail && t.discountDetail.discountAmount > 0)
+      } else if (filterAbnormalType === 'has_third_party') {
+        result = result.filter((t) => t.isThirdPartyPayer)
+      } else if (filterAbnormalType === 'has_approval') {
+        result = result.filter((t) => t.approvalRecords && t.approvalRecords.length > 0)
+      } else if (filterAbnormalType === 'cancelled') {
+        result = result.filter((t) => t.status === 'cancelled')
+      }
+    }
+
+    return result
+  }, [shiftTxs, filterMember, filterPayMethod, filterAbnormalType, filterTxType])
+
+  const detailTransaction = useMemo(() => {
+    if (!detailTxId) return null
+    return transactions.find((t) => t.id === detailTxId) || null
+  }, [detailTxId, transactions])
+
+  const abnormalTypeOptions = [
+    { value: '', label: '全部交易' },
+    { value: 'has_abnormal', label: '有异常标记' },
+    { value: 'has_discount', label: '有折扣授权' },
+    { value: 'has_third_party', label: '代付交易' },
+    { value: 'has_approval', label: '有授权记录' },
+    { value: 'cancelled', label: '已取消' },
+  ]
+
   const handlePrint = (txId: string) => {
     incrementReceiptPrint(txId)
     alert('模拟打印小票：交易已打印')
@@ -41,6 +101,11 @@ export default function ShiftSummaryPage() {
   const handleShowSignature = (txId: string) => {
     setSignatureTxId(txId)
     setShowSignature(true)
+  }
+
+  const handleShowDetail = (txId: string) => {
+    setDetailTxId(txId)
+    setShowDetailDrawer(true)
   }
 
   const handleCloseShift = () => {
@@ -76,6 +141,16 @@ export default function ShiftSummaryPage() {
     currentShift.cardTotal +
     currentShift.wechatTotal +
     currentShift.alipayTotal
+
+  const getRiskBadge = (level?: RiskLevel) => {
+    if (!level || level === 'low') return null
+    const cfg = riskLevelConfig[level]
+    return (
+      <span className={`tag ${cfg.bg} ${cfg.text}`} style={{ fontSize: 11 }}>
+        {cfg.label}
+      </span>
+    )
+  }
 
   return (
     <div className="page-card">
@@ -161,7 +236,7 @@ export default function ShiftSummaryPage() {
               {abnormalTxs.length} 笔
             </div>
             <div style={{ fontSize: 12, color: '#6b7280', marginTop: 2 }}>
-              {currentShift.abnormalTransactions.length} 个风控标记
+              {currentShift.approvalCount || 0} 次授权 · {currentShift.thirdPartyPayCount || 0} 笔代付
             </div>
           </div>
         </div>
@@ -182,7 +257,7 @@ export default function ShiftSummaryPage() {
           {abnormalAlerts.map((a) => (
             <div key={a.id} className={`alert ${a.level === 'danger' ? 'alert-danger' : 'alert-warning'}`}>
               <span className="alert-icon">
-                {a.type === 'cancel' ? '🚫' : a.type === 'reprint' ? '🖨️' : a.type === 'adjust' ? '✏️' : '⚠️'}
+                {a.type === 'cancel' ? '🚫' : a.type === 'reprint' ? '🖨️' : a.type === 'adjust' || a.type === 'discount' ? '✏️' : '⚠️'}
               </span>
               <div style={{ flex: 1 }}>
                 <div className="text-bold">{a.message}</div>
@@ -195,56 +270,83 @@ export default function ShiftSummaryPage() {
         </div>
       )}
 
-      {abnormalTxs.length > 0 && (
-        <div className="section">
-          <h3 className="section-title">异常交易单追溯</h3>
-          <table className="table">
-            <thead>
-              <tr>
-                <th>交易单号</th>
-                <th>会员</th>
-                <th>类型</th>
-                <th>金额</th>
-                <th>异常标记</th>
-                <th>时间</th>
-                <th>操作</th>
-              </tr>
-            </thead>
-            <tbody>
-              {abnormalTxs.map((tx) => (
-                <tr key={tx.id}>
-                  <td className="text-bold">{tx.transactionNo}</td>
-                  <td>{tx.memberName}</td>
-                  <td>
-                    {tx.type === 'recharge' && <span className="tag tag-success">储值充值</span>}
-                    {tx.type === 'deduct' && <span className="tag tag-info">项目扣款</span>}
-                    {tx.type === 'refund' && <span className="tag tag-warning">退款</span>}
-                  </td>
-                  <td className={tx.type === 'recharge' ? 'text-green' : 'text-pink'}>{formatCurrency(tx.amount)}</td>
-                  <td>
-                    {(tx.warningFlags || []).map((f) => (
-                      <span key={f} className="tag tag-warning" style={{ marginRight: 4 }}>{f}</span>
-                    ))}
-                  </td>
-                  <td className="text-gray">{tx.createdAt}</td>
-                  <td>
-                    <button className="btn btn-secondary btn-sm" onClick={() => handleShowSignature(tx.id)}>
-                      查看签字
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-
       <div className="section">
-        <h3 className="section-title">本班次全部交易 ({shiftTxs.length} 笔)</h3>
-        {shiftTxs.length === 0 ? (
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+          <h3 className="section-title" style={{ marginBottom: 0 }}>
+            交易明细台账
+            <span className="text-gray" style={{ fontWeight: 400, fontSize: 13, marginLeft: 8 }}>
+              共 {filteredTxs.length} 笔
+            </span>
+          </h3>
+        </div>
+
+        <div style={{
+          display: 'grid',
+          gridTemplateColumns: '1fr 1fr 1fr 1fr',
+          gap: 12,
+          padding: 14,
+          background: '#f9fafb',
+          borderRadius: 12,
+          border: '1px solid #e5e7eb',
+          marginBottom: 12,
+        }}>
+          <div className="form-group" style={{ marginBottom: 0 }}>
+            <label className="form-label">按会员筛选</label>
+            <select
+              className="form-select"
+              value={filterMember}
+              onChange={(e) => setFilterMember(e.target.value)}
+            >
+              <option value="">全部会员</option>
+              {members.map((m) => (
+                <option key={m.id} value={m.id}>{maskName(m.name)} · {m.memberCode}</option>
+              ))}
+            </select>
+          </div>
+          <div className="form-group" style={{ marginBottom: 0 }}>
+            <label className="form-label">按支付方式</label>
+            <select
+              className="form-select"
+              value={filterPayMethod}
+              onChange={(e) => setFilterPayMethod(e.target.value as PaymentMethod | '')}
+            >
+              <option value="">全部方式</option>
+              {Object.entries(paymentMethodLabels).map(([key, label]) => (
+                <option key={key} value={key}>{label}</option>
+              ))}
+            </select>
+          </div>
+          <div className="form-group" style={{ marginBottom: 0 }}>
+            <label className="form-label">按交易类型</label>
+            <select
+              className="form-select"
+              value={filterTxType}
+              onChange={(e) => setFilterTxType(e.target.value)}
+            >
+              <option value="">全部类型</option>
+              {Object.entries(transactionTypeLabels).map(([key, label]) => (
+                <option key={key} value={key}>{label}</option>
+              ))}
+            </select>
+          </div>
+          <div className="form-group" style={{ marginBottom: 0 }}>
+            <label className="form-label">按异常类型</label>
+            <select
+              className="form-select"
+              value={filterAbnormalType}
+              onChange={(e) => setFilterAbnormalType(e.target.value)}
+            >
+              {abnormalTypeOptions.map((opt) => (
+                <option key={opt.value} value={opt.value}>{opt.label}</option>
+              ))}
+            </select>
+          </div>
+        </div>
+
+        {filteredTxs.length === 0 ? (
           <div className="empty-state">
             <div className="empty-icon">📋</div>
-            <div className="empty-text">当前班次暂无交易记录</div>
+            <div className="empty-text">暂无符合条件的交易记录</div>
           </div>
         ) : (
           <table className="table">
@@ -256,20 +358,26 @@ export default function ShiftSummaryPage() {
                 <th>金额</th>
                 <th>支付方式</th>
                 <th>状态</th>
-                <th>套餐/项目</th>
-                <th>打印次数</th>
+                <th>风险/异常</th>
                 <th>时间</th>
                 <th>操作</th>
               </tr>
             </thead>
             <tbody>
-              {shiftTxs.map((tx) => (
-                <tr key={tx.id} style={{ opacity: tx.status === 'cancelled' ? 0.55 : 1 }}>
+              {filteredTxs.map((tx) => (
+                <tr
+                  key={tx.id}
+                  style={{
+                    opacity: tx.status === 'cancelled' ? 0.55 : 1,
+                    cursor: 'pointer',
+                  }}
+                  onClick={() => handleShowDetail(tx.id)}
+                >
                   <td className="text-bold">{tx.transactionNo}</td>
                   <td>
                     {tx.memberName}
-                    {tx.warningFlags && tx.warningFlags.length > 0 && (
-                      <div style={{ fontSize: 11, color: '#b45309' }}>⚠ 异常</div>
+                    {tx.isThirdPartyPayer && (
+                      <div style={{ fontSize: 11, color: '#b45309' }}>代付: {tx.payerName}</div>
                     )}
                   </td>
                   <td>
@@ -288,33 +396,37 @@ export default function ShiftSummaryPage() {
                     {tx.status === 'pending' && '处理中'}
                     {tx.status === 'cancelled' && '已取消'}
                     {tx.status === 'voided' && '已作废'}
-                    {tx.cancelReason && (
-                      <div style={{ fontSize: 11, color: '#6b7280', marginTop: 2 }}>原因：{tx.cancelReason}</div>
+                  </td>
+                  <td>
+                    {tx.riskLevel && tx.riskLevel !== 'low' && getRiskBadge(tx.riskLevel)}
+                    {tx.discountDetail && tx.discountDetail.discountAmount > 0 && (
+                      <span className="tag tag-purple" style={{ fontSize: 11, marginRight: 4 }}>折扣</span>
+                    )}
+                    {tx.isThirdPartyPayer && (
+                      <span className="tag tag-warning" style={{ fontSize: 11 }}>代付</span>
+                    )}
+                    {tx.warningFlags && tx.warningFlags.length > 0 && (
+                      <div style={{ fontSize: 11, color: '#b45309', marginTop: 2 }}>
+                        ⚠ {tx.warningFlags.length} 项异常
+                      </div>
                     )}
                   </td>
-                  <td>
-                    {tx.packageName || (tx.items && tx.items.length > 0 ? (
-                      <div style={{ fontSize: 12, color: '#374151' }}>
-                        {tx.items.slice(0, 2).map((i) => (
-                          <div key={i.id}>· {i.projectName}</div>
-                        ))}
-                        {tx.items.length > 2 && <div>· 等 {tx.items.length} 项</div>}
-                      </div>
-                    ) : '-')}
-                  </td>
-                  <td>
-                    {tx.receiptPrintCount} 次
-                    {tx.receiptPrintCount >= 3 && <span className="tag tag-warning" style={{ marginLeft: 4 }}>多次</span>}
-                  </td>
                   <td className="text-gray" style={{ fontSize: 12 }}>{tx.createdAt.slice(5)}</td>
-                  <td>
+                  <td onClick={(e) => e.stopPropagation()}>
                     <div style={{ display: 'flex', gap: 4 }}>
+                      <button
+                        className="btn btn-secondary btn-sm"
+                        onClick={() => handleShowDetail(tx.id)}
+                        style={{ padding: '6px 10px', fontSize: 12 }}
+                      >
+                        📄 详情
+                      </button>
                       <button
                         className="btn btn-secondary btn-sm"
                         onClick={() => handlePrint(tx.id)}
                         style={{ padding: '6px 10px', fontSize: 12 }}
                       >
-                        🖨️ 打印
+                        🖨️
                       </button>
                       {tx.signature && (
                         <button
@@ -322,7 +434,7 @@ export default function ShiftSummaryPage() {
                           onClick={() => handleShowSignature(tx.id)}
                           style={{ padding: '6px 10px', fontSize: 12 }}
                         >
-                          ✍️ 签字
+                          ✍️
                         </button>
                       )}
                       {tx.status === 'completed' && currentShift.status === 'active' && (
@@ -431,6 +543,354 @@ export default function ShiftSummaryPage() {
             )}
             <div style={{ textAlign: 'right', marginTop: 16 }}>
               <button className="btn btn-secondary" onClick={() => { setShowSignature(false); setSignatureTxId(null) }}>关闭</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showDetailDrawer && detailTransaction && (
+        <div style={{
+          position: 'fixed', inset: 0, zIndex: 1000, display: 'flex',
+        }}>
+          <div
+            style={{
+              position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.5)',
+            }}
+            onClick={() => setShowDetailDrawer(false)}
+          />
+          <div style={{
+            position: 'absolute', right: 0, top: 0, bottom: 0, width: 680, maxWidth: '90vw',
+            background: 'white', boxShadow: '-4px 0 20px rgba(0,0,0,0.15)',
+            display: 'flex', flexDirection: 'column',
+          }}>
+            <div style={{
+              padding: '20px 24px',
+              borderBottom: '1px solid #e5e7eb',
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+            }}>
+              <div>
+                <h3 style={{ margin: 0, fontSize: 18 }}>交易详情</h3>
+                <p style={{ margin: '4px 0 0', fontSize: 13, color: '#6b7280' }}>
+                  {detailTransaction.transactionNo}
+                </p>
+              </div>
+              <button
+                className="btn btn-secondary btn-sm"
+                onClick={() => setShowDetailDrawer(false)}
+              >
+                ✕ 关闭
+              </button>
+            </div>
+
+            <div style={{ flex: 1, overflowY: 'auto', padding: 24 }}>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20, marginBottom: 24 }}>
+                <div>
+                  <div className="text-gray" style={{ fontSize: 12, marginBottom: 4 }}>交易类型</div>
+                  <div className="text-bold" style={{ fontSize: 15 }}>
+                    {transactionTypeLabels[detailTransaction.type]}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-gray" style={{ fontSize: 12, marginBottom: 4 }}>交易状态</div>
+                  <div>
+                    <span className={`status-dot ${detailTransaction.status}`} />
+                    {detailTransaction.status === 'completed' && '已完成'}
+                    {detailTransaction.status === 'pending' && '处理中'}
+                    {detailTransaction.status === 'cancelled' && '已取消'}
+                    {detailTransaction.status === 'voided' && '已作废'}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-gray" style={{ fontSize: 12, marginBottom: 4 }}>交易金额</div>
+                  <div className={`text-bold ${detailTransaction.type === 'recharge' ? 'text-green' : 'text-pink'}`} style={{ fontSize: 20 }}>
+                    {detailTransaction.type === 'recharge' ? '+' : ''}{formatCurrency(detailTransaction.amount)}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-gray" style={{ fontSize: 12, marginBottom: 4 }}>支付方式</div>
+                  <div className="text-bold" style={{ fontSize: 15 }}>
+                    {paymentMethodLabels[detailTransaction.paymentMethod]}
+                  </div>
+                </div>
+              </div>
+
+              <div style={{
+                background: '#f9fafb', padding: 16, borderRadius: 12,
+                border: '1px solid #e5e7eb', marginBottom: 20,
+              }}>
+                <div style={{ fontWeight: 600, marginBottom: 12, fontSize: 14 }}>会员信息</div>
+                <div className="summary-row"><span>会员姓名</span><span className="text-bold">{detailTransaction.memberName}</span></div>
+                <div className="summary-row"><span>会员卡号</span><span>{detailTransaction.memberCode}</span></div>
+                <div className="summary-row"><span>收银员</span><span>{detailTransaction.cashierName}</span></div>
+                <div className="summary-row"><span>交易时间</span><span>{detailTransaction.createdAt}</span></div>
+              </div>
+
+              {(detailTransaction.type === 'recharge') && (
+                <div style={{
+                  background: '#f0fdf4', padding: 16, borderRadius: 12,
+                  border: '1px solid #bbf7d0', marginBottom: 20,
+                }}>
+                  <div style={{ fontWeight: 600, marginBottom: 12, fontSize: 14, color: '#166534' }}>
+                    💰 储值明细
+                  </div>
+                  <div className="summary-row"><span>储值本金</span><span className="text-bold">{formatCurrency(detailTransaction.rechargePrincipal || 0)}</span></div>
+                  <div className="summary-row"><span>赠送金额</span><span className="text-green text-bold">+{formatCurrency(detailTransaction.rechargeGift || 0)}</span></div>
+                  {detailTransaction.packageName && (
+                    <div className="summary-row"><span>套餐名称</span><span>{detailTransaction.packageName}</span></div>
+                  )}
+                  <div className="summary-row total" style={{ marginTop: 8 }}>
+                    <span>本次入账总额</span>
+                    <span className="amount">{formatCurrency((detailTransaction.rechargePrincipal || 0) + (detailTransaction.rechargeGift || 0))}</span>
+                  </div>
+                </div>
+              )}
+
+              {detailTransaction.type === 'deduct' && (
+                <div style={{
+                  background: '#fdf2f8', padding: 16, borderRadius: 12,
+                  border: '1px solid #f9a8d4', marginBottom: 20,
+                }}>
+                  <div style={{ fontWeight: 600, marginBottom: 12, fontSize: 14, color: '#9d174d' }}>
+                    💆 项目消费明细
+                  </div>
+
+                  {detailTransaction.discountDetail && detailTransaction.discountDetail.discountAmount > 0 && (
+                    <div style={{
+                      background: '#fffbeb', padding: 12, borderRadius: 8,
+                      marginBottom: 12, border: '1px solid #fde68a',
+                    }}>
+                      <div className="summary-row">
+                        <span>原价合计</span>
+                        <span className="text-gray" style={{ textDecoration: 'line-through' }}>
+                          {formatCurrency(detailTransaction.discountDetail.originalAmount)}
+                        </span>
+                      </div>
+                      <div className="summary-row">
+                        <span>优惠折扣</span>
+                        <span className="text-red text-bold">
+                          -{formatCurrency(detailTransaction.discountDetail.discountAmount)}
+                          <span style={{ fontSize: 12, marginLeft: 4 }}>
+                            ({(detailTransaction.discountDetail.discountRatio * 100).toFixed(1)}折)
+                          </span>
+                        </span>
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="summary-row"><span>本金扣款</span><span className="text-bold">{formatCurrency(detailTransaction.principalUsed || 0)}</span></div>
+                  <div className="summary-row"><span>赠金抵扣</span><span className="text-green text-bold">{formatCurrency(detailTransaction.giftUsed || 0)}</span></div>
+                  {detailTransaction.makeUpAmount && detailTransaction.makeUpAmount > 0 && (
+                    <div className="summary-row">
+                      <span>补差价（{paymentMethodLabels[detailTransaction.makeUpMethod || 'cash']}）</span>
+                      <span className="text-bold">{formatCurrency(detailTransaction.makeUpAmount)}</span>
+                    </div>
+                  )}
+                  <div className="summary-row total" style={{ marginTop: 8 }}>
+                    <span>实际扣款总额</span>
+                    <span className="amount text-pink">{formatCurrency(detailTransaction.amount)}</span>
+                  </div>
+                </div>
+              )}
+
+              {detailTransaction.items && detailTransaction.items.length > 0 && (
+                <div style={{ marginBottom: 20 }}>
+                  <div style={{ fontWeight: 600, marginBottom: 12, fontSize: 14 }}>项目明细（{detailTransaction.items.length} 项）</div>
+                  <table className="table" style={{ fontSize: 13 }}>
+                    <thead>
+                      <tr>
+                        <th>项目名称</th>
+                        <th>医生</th>
+                        <th>单价</th>
+                        <th>数量</th>
+                        <th>小计</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {detailTransaction.items.map((item) => (
+                        <tr key={item.id}>
+                          <td>
+                            <div className="text-bold">{item.projectName}</div>
+                            {item.treatmentNo && (
+                              <div style={{ fontSize: 11, color: '#6b7280' }}>治疗号: {item.treatmentNo}</div>
+                            )}
+                            {item.originalPrice !== item.unitPrice && (
+                              <div style={{ fontSize: 11, color: '#dc2626' }}>
+                                原价 {formatCurrency(item.originalPrice)}
+                              </div>
+                            )}
+                          </td>
+                          <td>{item.doctorName}</td>
+                          <td>{formatCurrency(item.unitPrice)}</td>
+                          <td>{item.quantity}</td>
+                          <td className="text-bold">{formatCurrency(item.amount)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  {detailTransaction.consultantName && (
+                    <div style={{ marginTop: 10, fontSize: 13, color: '#6b7280' }}>
+                      咨询师：<span className="text-bold">{detailTransaction.consultantName}</span>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {detailTransaction.isThirdPartyPayer && (
+                <div style={{
+                  background: '#fffbeb', padding: 16, borderRadius: 12,
+                  border: '1px solid #fde68a', marginBottom: 20,
+                }}>
+                  <div style={{ fontWeight: 600, marginBottom: 12, fontSize: 14, color: '#92400e' }}>
+                    📝 代付人信息
+                  </div>
+                  <div className="summary-row"><span>代付人姓名</span><span className="text-bold">{detailTransaction.payerName}</span></div>
+                  <div className="summary-row"><span>联系电话</span><span>{maskPhone(detailTransaction.payerPhone || '')}</span></div>
+                </div>
+              )}
+
+              {detailTransaction.approvalRecords && detailTransaction.approvalRecords.length > 0 && (
+                <div style={{
+                  background: '#f5f3ff', padding: 16, borderRadius: 12,
+                  border: '1px solid #ddd6fe', marginBottom: 20,
+                }}>
+                  <div style={{ fontWeight: 600, marginBottom: 12, fontSize: 14, color: '#5b21b6' }}>
+                    🔐 授权记录
+                  </div>
+                  {detailTransaction.approvalRecords.map((appr, idx) => (
+                    <div key={idx} style={{
+                      padding: '10px 12px',
+                      background: 'white',
+                      borderRadius: 8,
+                      border: '1px solid #e9d5ff',
+                      marginBottom: idx < detailTransaction.approvalRecords!.length - 1 ? 8 : 0,
+                    }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
+                        <span className="text-bold">{appr.approverName}</span>
+                        <span className="tag tag-purple" style={{ fontSize: 11 }}>
+                          {appr.approvalLevel === 'manager' ? '店经理' : '主管'}
+                        </span>
+                      </div>
+                      <div style={{ fontSize: 12, color: '#6b7280' }}>
+                        授权类型：{appr.approvalType === 'price_adjust' ? '价格调整' : appr.approvalType === 'large_recharge' ? '大额储值' : appr.approvalType}
+                      </div>
+                      {appr.originalValue !== undefined && appr.newValue !== undefined && (
+                        <div style={{ fontSize: 12, color: '#6b7280', marginTop: 2 }}>
+                          金额变动：{formatCurrency(appr.originalValue)} → {formatCurrency(appr.newValue)}
+                        </div>
+                      )}
+                      <div style={{ fontSize: 12, color: '#6b7280', marginTop: 2 }}>
+                        授权原因：{appr.reason}
+                      </div>
+                      <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 4 }}>
+                        {appr.timestamp}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {(detailTransaction.warningFlags && detailTransaction.warningFlags.length > 0) && (
+                <div style={{
+                  background: '#fef2f2', padding: 16, borderRadius: 12,
+                  border: '1px solid #fecaca', marginBottom: 20,
+                }}>
+                  <div style={{ fontWeight: 600, marginBottom: 12, fontSize: 14, color: '#991b1b' }}>
+                    ⚠️ 异常标记
+                  </div>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                    {detailTransaction.warningFlags.map((flag, idx) => (
+                      <span key={idx} className="tag tag-danger" style={{ fontSize: 12 }}>
+                        {flag}
+                      </span>
+                    ))}
+                  </div>
+                  {detailTransaction.riskDetails && detailTransaction.riskDetails.length > 0 && (
+                    <div style={{ marginTop: 10, fontSize: 12, color: '#7f1d1d' }}>
+                      <div style={{ fontWeight: 600, marginBottom: 4 }}>风险详情：</div>
+                      <ul style={{ margin: 0, paddingLeft: 18, lineHeight: 1.8 }}>
+                        {detailTransaction.riskDetails.map((d, idx) => (
+                          <li key={idx}>{d}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {detailTransaction.cancelReason && (
+                <div style={{
+                  background: '#fef2f2', padding: 16, borderRadius: 12,
+                  border: '1px solid #fecaca', marginBottom: 20,
+                }}>
+                  <div style={{ fontWeight: 600, marginBottom: 8, fontSize: 14, color: '#991b1b' }}>
+                    🚫 取消原因
+                  </div>
+                  <div style={{ fontSize: 13 }}>{detailTransaction.cancelReason}</div>
+                  {detailTransaction.cancelledAt && (
+                    <div style={{ fontSize: 12, color: '#6b7280', marginTop: 6 }}>
+                      取消时间：{detailTransaction.cancelledAt}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {detailTransaction.signature && (
+                <div style={{
+                  background: '#f9fafb', padding: 16, borderRadius: 12,
+                  border: '1px solid #e5e7eb',
+                }}>
+                  <div style={{ fontWeight: 600, marginBottom: 12, fontSize: 14 }}>
+                    ✍️ 顾客签字
+                  </div>
+                  <div style={{
+                    border: '1px solid #e5e7eb', borderRadius: 8, overflow: 'hidden',
+                    background: 'white',
+                  }}>
+                    <img src={detailTransaction.signature} alt="签字" style={{ width: '100%', display: 'block' }} />
+                  </div>
+                </div>
+              )}
+
+              {detailTransaction.remarks && (
+                <div style={{
+                  background: '#f9fafb', padding: 16, borderRadius: 12,
+                  border: '1px solid #e5e7eb', marginTop: 20,
+                }}>
+                  <div style={{ fontWeight: 600, marginBottom: 8, fontSize: 14 }}>
+                    📝 备注
+                  </div>
+                  <div style={{ fontSize: 13 }}>{detailTransaction.remarks}</div>
+                </div>
+              )}
+            </div>
+
+            <div style={{
+              padding: '16px 24px',
+              borderTop: '1px solid #e5e7eb',
+              display: 'flex',
+              gap: 10,
+              justifyContent: 'flex-end',
+            }}>
+              <button
+                className="btn btn-secondary"
+                onClick={() => handlePrint(detailTransaction.id)}
+              >
+                🖨️ 打印小票
+              </button>
+              {detailTransaction.status === 'completed' && currentShift.status === 'active' && (
+                <button
+                  className="btn btn-danger"
+                  onClick={() => {
+                    setShowDetailDrawer(false)
+                    setSelectedTx(detailTransaction.id)
+                    setShowCancel(true)
+                  }}
+                >
+                  🚫 取消交易
+                </button>
+              )}
             </div>
           </div>
         </div>

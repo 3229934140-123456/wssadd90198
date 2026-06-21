@@ -1,8 +1,16 @@
 import { useState, useRef, useEffect, useMemo } from 'react'
 import { Navigate, useNavigate } from 'react-router-dom'
 import { useAppStore } from '../store/useAppStore'
-import { checkRechargeRules, formatCurrency, maskName, levelColorMap, paymentMethodLabels } from '../utils/rules'
-import type { Package, PaymentMethod } from '../types'
+import {
+  checkRechargeRules,
+  formatCurrency,
+  maskName,
+  maskPhone,
+  levelColorMap,
+  paymentMethodLabels,
+  riskLevelConfig,
+} from '../utils/rules'
+import type { Package, PaymentMethod, RiskLevel, ApprovalLevel } from '../types'
 
 export default function RechargeValidatePage() {
   const navigate = useNavigate()
@@ -11,18 +19,24 @@ export default function RechargeValidatePage() {
   const transactions = useAppStore((s) => s.transactions)
   const currentCashier = useAppStore((s) => s.currentCashier)
   const createTransaction = useAppStore((s) => s.createTransaction)
+  const addAbnormalAlert = useAppStore((s) => s.addAbnormalAlert)
   const setCurrentMember = useAppStore((s) => s.setCurrentMember)
 
   const [selectedPkg, setSelectedPkg] = useState<Package | null>(null)
   const [customAmount, setCustomAmount] = useState('')
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('card')
-  const [signature, setSignature] = useState('')
   const [hasSigned, setHasSigned] = useState(false)
   const [showSuccess, setShowSuccess] = useState(false)
   const [lastTxNo, setLastTxNo] = useState('')
   const [agreeTerms, setAgreeTerms] = useState(false)
-  const [approvalPwd, setApprovalPwd] = useState('')
   const [showApproval, setShowApproval] = useState(false)
+  const [approvalPwd, setApprovalPwd] = useState('')
+  const [approvalReason, setApprovalReason] = useState('')
+
+  const [isThirdPartyPayer, setIsThirdPartyPayer] = useState(false)
+  const [payerName, setPayerName] = useState('')
+  const [payerPhone, setPayerPhone] = useState('')
+  const [payerRelation, setPayerRelation] = useState('')
 
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const isDrawing = useRef(false)
@@ -47,10 +61,27 @@ export default function RechargeValidatePage() {
 
   const ruleResult = useMemo(() => {
     if (!currentMember || rechargeAmount <= 0) {
-      return { passed: true, warnings: [], requiresApproval: false, approvalLevel: 'none' as const }
+      return {
+        passed: true,
+        overallRiskLevel: 'low' as RiskLevel,
+        warnings: [] as string[],
+        ruleDetails: [],
+        suggestions: [] as string[],
+        requiresApproval: false,
+        approvalLevel: 'none' as ApprovalLevel,
+      }
     }
-    return checkRechargeRules(rechargeAmount, selectedPkg, currentMember, transactions, currentCashier.id)
-  }, [currentMember, selectedPkg, rechargeAmount, transactions, currentCashier.id])
+    const payerPhoneForCheck = isThirdPartyPayer && payerPhone ? payerPhone : undefined
+    return checkRechargeRules(
+      rechargeAmount,
+      selectedPkg,
+      currentMember,
+      transactions,
+      currentCashier.id,
+      payerPhoneForCheck,
+      payerName || undefined,
+    )
+  }, [currentMember, selectedPkg, rechargeAmount, transactions, currentCashier.id, isThirdPartyPayer, payerPhone, payerName])
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -81,7 +112,6 @@ export default function RechargeValidatePage() {
     isDrawing.current = true
     lastPos.current = getPos(e)
   }
-
   const draw = (e: React.MouseEvent | React.TouchEvent) => {
     if (!isDrawing.current) return
     e.preventDefault()
@@ -95,10 +125,7 @@ export default function RechargeValidatePage() {
     lastPos.current = pos
     setHasSigned(true)
   }
-
-  const endDraw = () => {
-    isDrawing.current = false
-  }
+  const endDraw = () => { isDrawing.current = false }
 
   const clearSignature = () => {
     const canvas = canvasRef.current
@@ -107,20 +134,16 @@ export default function RechargeValidatePage() {
     if (!ctx) return
     ctx.clearRect(0, 0, canvas.width, canvas.height)
     setHasSigned(false)
-    setSignature('')
   }
 
-  const handleSubmit = async () => {
+  const handleSubmit = () => {
     if (!currentMember) return
     if (rechargeAmount <= 0) return
     if (!paymentMethod) return
-    if (!agreeTerms) {
-      alert('请先确认充值协议和退款说明')
-      return
-    }
-    if (!hasSigned) {
-      alert('请让顾客在签字板上签名确认')
-      return
+    if (!agreeTerms) { alert('请先确认充值协议和退款说明'); return }
+    if (!hasSigned) { alert('请让顾客在签字板上签名确认'); return }
+    if (isThirdPartyPayer && (!payerName.trim() || !payerPhone.trim())) {
+      alert('请填写代付人姓名和手机号'); return
     }
 
     if (ruleResult.requiresApproval) {
@@ -132,20 +155,50 @@ export default function RechargeValidatePage() {
   }
 
   const handleApproval = () => {
-    if (approvalPwd === '123456' || approvalPwd === '888888') {
-      setShowApproval(false)
-      setApprovalPwd('')
-      doSubmit()
-    } else {
+    const isSupervisor = approvalPwd === '123456'
+    const isManager = approvalPwd === '888888'
+
+    if (!isSupervisor && !isManager) {
       alert('授权密码错误，请联系主管')
+      return
     }
+
+    const requiredLevel = ruleResult.approvalLevel
+    if (requiredLevel === 'manager' && !isManager) {
+      alert('此交易需要店经理授权，请联系店经理')
+      return
+    }
+    if (!approvalReason.trim()) {
+      alert('请填写授权原因')
+      return
+    }
+
+    setShowApproval(false)
+    setApprovalPwd('')
+    doSubmit(isManager ? 'manager' : 'supervisor', isManager ? '刘店总' : '张主管', isManager ? 'm001' : 's001')
   }
 
-  const doSubmit = () => {
+  const doSubmit = (
+    approvalLevel?: ApprovalLevel,
+    approverName?: string,
+    approverId?: string,
+  ) => {
     if (!currentMember) return
     const canvas = canvasRef.current
     const sigData = canvas ? canvas.toDataURL('image/png') : ''
-    setSignature(sigData)
+
+    const approvalRecords = approvalLevel && approverName && approverId
+      ? [{
+          approverId,
+          approverName,
+          approvalLevel,
+          approvalType: (ruleResult.overallRiskLevel === 'critical' ? 'large_recharge' : 'low_price') as 'large_recharge' | 'low_price',
+          reason: approvalReason || '风控授权通过',
+        }]
+      : []
+
+    const actualPayerName = isThirdPartyPayer ? payerName.trim() : currentMember.name
+    const actualPayerPhone = isThirdPartyPayer ? payerPhone.trim() : currentMember.phone
 
     const tx = createTransaction({
       type: 'recharge',
@@ -157,8 +210,34 @@ export default function RechargeValidatePage() {
       rechargePrincipal: rechargeAmount,
       rechargeGift: giftAmount,
       signature: sigData,
-      remarks: ruleResult.warnings.length > 0 ? `规则预警: ${ruleResult.warnings.join('; ')}` : undefined,
+      payerName: actualPayerName,
+      payerPhone: actualPayerPhone,
+      isThirdPartyPayer,
+      riskLevel: ruleResult.overallRiskLevel,
+      riskDetails: ruleResult.warnings.length > 0 ? ruleResult.warnings : undefined,
+      warningFlags: ruleResult.warnings.length > 0 ? ruleResult.warnings : undefined,
+      approvalRecords,
+      remarks: approvalReason ? `授权原因: ${approvalReason}` : undefined,
     })
+
+    if (ruleResult.overallRiskLevel === 'high' || ruleResult.overallRiskLevel === 'critical') {
+      addAbnormalAlert({
+        type: ruleResult.overallRiskLevel === 'critical' ? 'large_amount' : 'low_price',
+        message: `储值 ${formatCurrency(rechargeAmount)} 触发${riskLevelConfig[ruleResult.overallRiskLevel].label}，会员：${currentMember.name}`,
+        transactionId: tx.id,
+        cashierId: currentCashier.id,
+        level: ruleResult.overallRiskLevel === 'critical' ? 'danger' : 'warning',
+      })
+    }
+    if (isThirdPartyPayer) {
+      addAbnormalAlert({
+        type: 'multi_payer',
+        message: `代付储值：付款人 ${payerName} 为会员 ${currentMember.name} 支付 ${formatCurrency(rechargeAmount)}`,
+        transactionId: tx.id,
+        cashierId: currentCashier.id,
+        level: 'warning',
+      })
+    }
 
     setLastTxNo(tx.transactionNo)
     setShowSuccess(true)
@@ -190,6 +269,7 @@ export default function RechargeValidatePage() {
   }
 
   const levelInfo = levelColorMap[currentMember.level]
+  const riskCfg = riskLevelConfig[ruleResult.overallRiskLevel]
 
   if (showSuccess) {
     return (
@@ -201,6 +281,9 @@ export default function RechargeValidatePage() {
         <div style={{ maxWidth: 480, margin: '32px auto', background: '#f0fdf4', padding: 28, borderRadius: 16, border: '1px solid #bbf7d0' }}>
           <div className="summary-row"><span>储值本金</span><span className="text-bold">{formatCurrency(rechargeAmount)}</span></div>
           <div className="summary-row"><span>赠送金额</span><span className="text-green text-bold">+{formatCurrency(giftAmount)}</span></div>
+          {isThirdPartyPayer && (
+            <div className="summary-row"><span>代付人</span><span className="text-bold">{maskName(payerName)} ({maskPhone(payerPhone)})</span></div>
+          )}
           <div className="summary-row total">
             <span>本次入账总额</span>
             <span className="amount">{formatCurrency(rechargeAmount + giftAmount)}</span>
@@ -227,9 +310,9 @@ export default function RechargeValidatePage() {
       <h1 className="page-title">储值校验</h1>
       <p className="page-subtitle">录入储值信息，系统自动校验大额、低价囤卡、代付等风控规则</p>
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1.4fr 1fr', gap: 24 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: '1.5fr 1fr', gap: 24 }}>
         <div>
-          <div className="member-card" style={{ padding: 18, marginBottom: 24 }}>
+          <div className="member-card" style={{ padding: 18, marginBottom: 20 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
               <div className="member-avatar" style={{ width: 48, height: 48, fontSize: 20, borderRadius: 12 }}>
                 {maskName(currentMember.name).charAt(0)}
@@ -242,13 +325,14 @@ export default function RechargeValidatePage() {
                   </span>
                 </div>
                 <div className="text-gray" style={{ fontSize: 12, marginTop: 2 }}>
-                  {currentMember.memberCode} · 当前余额 <span className="text-pink text-bold">{formatCurrency(currentMember.balance)}</span>
+                  {currentMember.memberCode} · 余额 <span className="text-pink text-bold">{formatCurrency(currentMember.balance)}</span>
+                  · 本金 {formatCurrency(currentMember.principal)} · 赠金 {formatCurrency(currentMember.gift)}
                 </div>
               </div>
             </div>
           </div>
 
-          <div className="section">
+          <div className="section" style={{ marginBottom: 20 }}>
             <h3 className="section-title">选择活动套餐</h3>
             <div className="packages-grid">
               {packages.filter((p) => p.isActive).map((pkg) => (
@@ -272,7 +356,7 @@ export default function RechargeValidatePage() {
           </div>
 
           {!selectedPkg && (
-            <div className="section">
+            <div className="section" style={{ marginBottom: 20 }}>
               <h3 className="section-title">或自定义储值金额</h3>
               <div className="form-group">
                 <input
@@ -294,7 +378,7 @@ export default function RechargeValidatePage() {
             </div>
           )}
 
-          <div className="section">
+          <div className="section" style={{ marginBottom: 20 }}>
             <h3 className="section-title">支付方式</h3>
             <div className="payment-methods">
               {(['card', 'cash', 'wechat', 'alipay'] as PaymentMethod[]).map((m) => (
@@ -310,20 +394,141 @@ export default function RechargeValidatePage() {
             </div>
           </div>
 
-          {ruleResult.warnings.length > 0 && (
-            <div className="section">
-              <h3 className="section-title">规则预警</h3>
-              {ruleResult.warnings.map((w, i) => (
-                <div key={i} className={`alert ${ruleResult.approvalLevel === 'manager' ? 'alert-danger' : 'alert-warning'}`}>
-                  <span className="alert-icon">{ruleResult.approvalLevel === 'manager' ? '🛑' : '⚠️'}</span>
-                  <div>
-                    <div className="text-bold">{w}</div>
-                    <div style={{ fontSize: 12, marginTop: 4, opacity: 0.8 }}>
-                      {ruleResult.approvalLevel === 'manager' ? '需要店经理授权（密码 888888）' : '需要主管授权（密码 123456）'}
+          <div className="section" style={{ marginBottom: 20 }}>
+            <h3 className="section-title">
+              付款人信息
+              <span className="text-gray" style={{ fontWeight: 400, fontSize: 12, marginLeft: 8 }}>
+                （非本人付款请登记，便于风控追溯）
+              </span>
+            </h3>
+            <div style={{ marginBottom: 14 }}>
+              <label className="form-label">
+                <input
+                  type="checkbox"
+                  checked={isThirdPartyPayer}
+                  onChange={(e) => setIsThirdPartyPayer(e.target.checked)}
+                  style={{ marginRight: 8 }}
+                />
+                非会员本人付款（代付登记）
+              </label>
+            </div>
+
+            {isThirdPartyPayer && (
+              <div style={{
+                display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12,
+                padding: 16, background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 12,
+              }}>
+                <div className="form-group" style={{ marginBottom: 0 }}>
+                  <label className="form-label">代付人姓名</label>
+                  <input
+                    type="text"
+                    className="form-input"
+                    placeholder="请输入姓名"
+                    value={payerName}
+                    onChange={(e) => setPayerName(e.target.value)}
+                  />
+                </div>
+                <div className="form-group" style={{ marginBottom: 0 }}>
+                  <label className="form-label">手机号</label>
+                  <input
+                    type="tel"
+                    className="form-input"
+                    placeholder="请输入手机号"
+                    value={payerPhone}
+                    onChange={(e) => setPayerPhone(e.target.value)}
+                  />
+                </div>
+                <div className="form-group" style={{ marginBottom: 0 }}>
+                  <label className="form-label">与会员关系</label>
+                  <select
+                    className="form-select"
+                    value={payerRelation}
+                    onChange={(e) => setPayerRelation(e.target.value)}
+                  >
+                    <option value="">请选择</option>
+                    <option value="亲属">亲属</option>
+                    <option value="朋友">朋友</option>
+                    <option value="同事">同事</option>
+                    <option value="其他">其他</option>
+                  </select>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {ruleResult.ruleDetails.length > 0 && rechargeAmount > 0 && (
+            <div className="section" style={{ marginBottom: 20 }}>
+              <h3 className="section-title">
+                风控规则校验
+                <span
+                  className={`tag ${riskCfg.bg} ${riskCfg.text}`}
+                  style={{ marginLeft: 10, fontSize: 13, padding: '4px 12px' }}
+                >
+                  <span
+                    style={{
+                      display: 'inline-block', width: 8, height: 8, borderRadius: '50%',
+                      background: riskCfg.dot, marginRight: 6, verticalAlign: 'middle',
+                    }}
+                  />
+                  {ruleResult.passed ? '全部通过' : riskCfg.label}
+                </span>
+              </h3>
+
+              <div style={{ display: 'grid', gap: 8 }}>
+                {ruleResult.ruleDetails.map((rule) => {
+                  const cfg = riskLevelConfig[rule.riskLevel]
+                  return (
+                    <div
+                      key={rule.key}
+                      style={{
+                        display: 'flex', alignItems: 'flex-start', gap: 12,
+                        padding: 12, borderRadius: 10,
+                        background: rule.passed ? '#f9fafb' : cfg.bg,
+                        border: `1px solid ${rule.passed ? '#e5e7eb' : 'transparent'}`,
+                      }}
+                    >
+                      <div style={{
+                        width: 28, height: 28, borderRadius: '50%', flexShrink: 0,
+                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        background: rule.passed ? '#dcfce7' : cfg.dot, color: 'white',
+                        fontSize: 14, fontWeight: 700,
+                      }}>
+                        {rule.passed ? '✓' : '!'}
+                      </div>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                          <span className="text-bold" style={{ fontSize: 14 }}>{rule.name}</span>
+                          {!rule.passed && (
+                            <span className={`tag ${cfg.bg} ${cfg.text}`} style={{ fontSize: 11 }}>
+                              {cfg.label}
+                            </span>
+                          )}
+                        </div>
+                        <div style={{ fontSize: 13, color: '#4b5563' }}>{rule.message}</div>
+                        {!rule.passed && rule.suggestion && (
+                          <div style={{ fontSize: 12, marginTop: 4, color: '#6b7280' }}>
+                            💡 处理建议：{rule.suggestion}
+                          </div>
+                        )}
+                      </div>
                     </div>
+                  )
+                })}
+              </div>
+
+              {ruleResult.suggestions.length > 0 && (
+                <div className="alert alert-info" style={{ marginTop: 12, marginBottom: 0 }}>
+                  <span className="alert-icon">📋</span>
+                  <div>
+                    <div className="text-bold" style={{ marginBottom: 4 }}>综合处理建议</div>
+                    <ul style={{ margin: 0, paddingLeft: 16, fontSize: 13, lineHeight: 1.8 }}>
+                      {ruleResult.suggestions.map((s, i) => (
+                        <li key={i}>{s}</li>
+                      ))}
+                    </ul>
                   </div>
                 </div>
-              ))}
+              )}
             </div>
           )}
         </div>
@@ -368,10 +573,10 @@ export default function RechargeValidatePage() {
 
             <div className="form-group">
               <div className="form-label">顾客签字确认 <span className="text-gray" style={{ fontWeight: 400 }}>（请让顾客在此签字）</span></div>
-              <div className="signature-pad" style={{ height: 180 }}>
+              <div className="signature-pad" style={{ height: 160 }}>
                 <canvas
                   ref={canvasRef}
-                  style={{ width: '100%', height: 180 }}
+                  style={{ width: '100%', height: 160 }}
                   onMouseDown={startDraw}
                   onMouseMove={draw}
                   onMouseUp={endDraw}
@@ -392,6 +597,17 @@ export default function RechargeValidatePage() {
             <div className="summary-row"><span>储值本金</span><span className="text-bold">{formatCurrency(rechargeAmount)}</span></div>
             <div className="summary-row"><span>赠送金额</span><span className="text-green text-bold">+{formatCurrency(giftAmount)}</span></div>
             <div className="summary-row"><span>支付方式</span><span>{paymentMethodLabels[paymentMethod]}</span></div>
+            {isThirdPartyPayer && (
+              <div className="summary-row"><span>代付人</span><span className="text-bold">{payerName || '待填写'}</span></div>
+            )}
+            {ruleResult.requiresApproval && (
+              <div className="summary-row">
+                <span>授权级别</span>
+                <span className={`tag ${ruleResult.approvalLevel === 'manager' ? 'tag-danger' : 'tag-warning'}`}>
+                  {ruleResult.approvalLevel === 'manager' ? '店经理授权' : '主管授权'}
+                </span>
+              </div>
+            )}
             <div className="summary-row total">
               <span>本次实付</span>
               <span className="amount">{formatCurrency(rechargeAmount)}</span>
@@ -403,9 +619,15 @@ export default function RechargeValidatePage() {
             <button
               className="btn btn-primary"
               onClick={handleSubmit}
-              disabled={rechargeAmount <= 0 || !paymentMethod || !agreeTerms || !hasSigned}
+              disabled={
+                rechargeAmount <= 0 ||
+                !paymentMethod ||
+                !agreeTerms ||
+                !hasSigned ||
+                (isThirdPartyPayer && (!payerName.trim() || !payerPhone.trim()))
+              }
             >
-              确认储值
+              {ruleResult.requiresApproval ? '需授权后确认' : '确认储值'}
             </button>
           </div>
         </div>
@@ -417,17 +639,20 @@ export default function RechargeValidatePage() {
           alignItems: 'center', justifyContent: 'center', zIndex: 1000,
         }}>
           <div style={{
-            background: 'white', borderRadius: 16, padding: 32, width: 400,
+            background: 'white', borderRadius: 16, padding: 28, width: 440,
             boxShadow: '0 20px 60px rgba(0,0,0,0.2)',
           }}>
-            <div style={{ fontSize: 48, textAlign: 'center', marginBottom: 16 }}>🔐</div>
-            <h3 style={{ textAlign: 'center', marginBottom: 8 }}>需要授权审批</h3>
-            <p style={{ textAlign: 'center', color: '#6b7280', fontSize: 13, marginBottom: 20 }}>
-              本次操作触发风控规则，需要{ruleResult.approvalLevel === 'manager' ? '店经理' : '主管'}授权
-              <br />
-              <span style={{ fontSize: 12 }}>（演示密码：主管123456 / 经理888888）</span>
+            <div style={{ fontSize: 44, textAlign: 'center', marginBottom: 12 }}>🔐</div>
+            <h3 style={{ textAlign: 'center', marginBottom: 4 }}>风控授权</h3>
+            <p style={{ textAlign: 'center', color: '#6b7280', fontSize: 13, marginBottom: 6 }}>
+              本次操作触发 <span className={`tag ${riskCfg.bg} ${riskCfg.text}`} style={{ fontSize: 12 }}>{riskCfg.label}</span> 规则
+            </p>
+            <p style={{ textAlign: 'center', color: '#9ca3af', fontSize: 12, marginBottom: 20 }}>
+              需要{ruleResult.approvalLevel === 'manager' ? '店经理' : '主管'}现场授权
+              <br />（演示密码：主管 123456 / 店经理 888888）
             </p>
             <div className="form-group">
+              <label className="form-label">授权密码</label>
               <input
                 type="password"
                 className="form-input"
@@ -438,7 +663,27 @@ export default function RechargeValidatePage() {
                 autoFocus
               />
             </div>
-            <div style={{ display: 'flex', gap: 10 }}>
+            <div className="form-group">
+              <label className="form-label">授权原因</label>
+              <select
+                className="form-select"
+                value={approvalReason}
+                onChange={(e) => setApprovalReason(e.target.value)}
+              >
+                <option value="">请选择授权原因</option>
+                <option value="老客户特惠">老客户特惠</option>
+                <option value="活动促销">活动促销期间</option>
+                <option value="大客户维护">大客户维护</option>
+                <option value="投诉安抚">投诉安抚</option>
+                <option value="其他">其他原因</option>
+              </select>
+            </div>
+            {ruleResult.warnings.slice(0, 2).map((w, i) => (
+              <div key={i} style={{ fontSize: 12, color: '#b45309', background: '#fffbeb', padding: '8px 12px', borderRadius: 8, marginBottom: 6 }}>
+                ⚠️ {w}
+              </div>
+            ))}
+            <div style={{ display: 'flex', gap: 10, marginTop: 18 }}>
               <button className="btn btn-secondary" style={{ flex: 1 }} onClick={() => { setShowApproval(false); setApprovalPwd('') }}>取消</button>
               <button className="btn btn-primary" style={{ flex: 1 }} onClick={handleApproval}>确认授权</button>
             </div>

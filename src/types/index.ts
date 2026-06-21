@@ -4,6 +4,10 @@ export type TransactionType = 'recharge' | 'deduct' | 'refund' | 'adjust'
 
 export type TransactionStatus = 'pending' | 'completed' | 'cancelled' | 'voided'
 
+export type RiskLevel = 'low' | 'medium' | 'high' | 'critical'
+
+export type ApprovalLevel = 'none' | 'supervisor' | 'manager'
+
 export interface Member {
   id: string
   memberCode: string
@@ -29,9 +33,37 @@ export interface TransactionItem {
   consultantId: string
   consultantName: string
   treatmentNo: string
+  originalPrice: number
   unitPrice: number
   quantity: number
   amount: number
+  discountAmount: number
+  discountRatio: number
+  discountApprovalId?: string
+}
+
+export interface ApprovalRecord {
+  id: string
+  transactionId: string
+  approverId: string
+  approverName: string
+  approvalLevel: ApprovalLevel
+  approvalType: 'price_adjust' | 'large_recharge' | 'low_price' | 'multi_payer' | 'cancel' | 'other'
+  reason: string
+  originalValue?: number
+  newValue?: number
+  timestamp: string
+}
+
+export interface DiscountDetail {
+  originalAmount: number
+  discountAmount: number
+  finalAmount: number
+  discountRatio: number
+  authorizationType: 'none' | 'supervisor' | 'manager'
+  authorizedById?: string
+  authorizedByName?: string
+  authorizationReason?: string
 }
 
 export interface Transaction {
@@ -47,6 +79,10 @@ export interface Transaction {
   packageName?: string
   rechargePrincipal?: number
   rechargeGift?: number
+  principalUsed?: number
+  giftUsed?: number
+  makeUpAmount?: number
+  makeUpMethod?: PaymentMethod
   items?: TransactionItem[]
   consultantId?: string
   consultantName?: string
@@ -56,10 +92,18 @@ export interface Transaction {
   cashierName: string
   remarks?: string
   warningFlags?: string[]
+  riskLevel?: RiskLevel
+  riskDetails?: string[]
+  approvalRecords?: ApprovalRecord[]
+  discountDetail?: DiscountDetail
+  payerName?: string
+  payerPhone?: string
+  isThirdPartyPayer?: boolean
   createdAt: string
   updatedAt: string
   cancelledAt?: string
   cancelReason?: string
+  cancelApproval?: ApprovalRecord
   receiptPrintCount: number
   manualAdjusted: boolean
   originalAmount?: number
@@ -85,11 +129,14 @@ export interface ShiftSummary {
   storedDeductTotal: number
   rechargeTotal: number
   refundTotal: number
+  makeUpTotal: number
   transactionCount: number
   rechargeCount: number
   deductCount: number
   refundCount: number
   abnormalTransactions: string[]
+  approvalCount: number
+  thirdPartyPayCount: number
   cashCount: number
   cardCount: number
   wechatCount: number
@@ -129,16 +176,28 @@ export interface Package {
   isActive: boolean
 }
 
+export interface RuleDetail {
+  key: string
+  name: string
+  passed: boolean
+  riskLevel: RiskLevel
+  message: string
+  suggestion: string
+}
+
 export interface RuleCheckResult {
   passed: boolean
+  overallRiskLevel: RiskLevel
   warnings: string[]
+  ruleDetails: RuleDetail[]
+  suggestions: string[]
   requiresApproval: boolean
-  approvalLevel: 'none' | 'supervisor' | 'manager'
+  approvalLevel: ApprovalLevel
 }
 
 export interface AbnormalAlert {
   id: string
-  type: 'cancel' | 'reprint' | 'adjust' | 'multi_payer' | 'large_amount' | 'low_price'
+  type: 'cancel' | 'reprint' | 'adjust' | 'multi_payer' | 'large_amount' | 'low_price' | 'discount'
   message: string
   transactionId?: string
   cashierId: string
